@@ -4,8 +4,8 @@ import AppKit
 /// 交互节奏（抽屉手感）：
 ///   1. 鼠标进入刘海 → 立即"探出"（抽屉拉开一条缝，.peeked）
 ///   2. 停留 0.12s 仍在内 → 完全展开（.expanded）
-///   3. 鼠标离开 → 收起：展开态 1.5s 后收起，探出态 0.35s 后收回
-/// 用全局鼠标移动监控实现，不需要辅助功能权限。
+///   3. 鼠标离开 → 收起：展开态 0.42s 后收起，探出态 0.22s 后收回
+/// 同时使用全局与应用内鼠标监听，不需要辅助功能权限。
 @MainActor
 final class HotZone {
     /// 探出 → 展开的停留判定
@@ -123,6 +123,11 @@ final class HotZone {
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.collapseWork = nil
+            guard !self.state.isEditingTask else { return }
+            let mouse = NSEvent.mouseLocation
+            guard !self.mouseIsInsideHotZone(mouse), !self.mouseIsInsidePanel(mouse) else {
+                return
+            }
             self.state.deckState = .collapsed
         }
         collapseWork = work

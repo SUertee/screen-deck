@@ -1,0 +1,13 @@
+# Swift Package 构建产物
+.build/
+
+# macOS
+.DS_Store
+
+# Xcode
+*.xcuserstate
+xcuserdata/
+.swiftpm/
+
+# 私人文档（如有：定价策略、个人想法草稿）
+# docs/private/

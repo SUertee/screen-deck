@@ -17,6 +17,7 @@ final class AppState: ObservableObject {
     @Published var sectionTitle = "今日任务"
     @Published var statusMessage = "读取中…"
     @Published var deckState: DeckState = .collapsed
+    @Published private(set) var isEditingTask = false
 
     @Published private(set) var dataAvailable = false
 
@@ -64,6 +65,20 @@ final class AppState: ObservableObject {
         } catch {
             statusMessage = "切换失败：\(error.localizedDescription)"
         }
+    }
+
+    func updateText(for task: TaskItem, to text: String) -> Bool {
+        do {
+            apply(try vault.updateTaskText(line: task.line, text: text))
+            return true
+        } catch {
+            statusMessage = "保存失败：\(error.localizedDescription)"
+            return false
+        }
+    }
+
+    func setEditingTask(_ isEditing: Bool) {
+        isEditingTask = isEditing
     }
 
     private func apply(_ payload: TasksPayload) {

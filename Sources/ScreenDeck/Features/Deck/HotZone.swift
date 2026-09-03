@@ -11,13 +11,14 @@ final class HotZone {
     /// 探出 → 展开的停留判定
     private static let expandDelay: TimeInterval = 0.12
     /// 展开态离开后的收起延迟
-    private static let expandCollapseDelay: TimeInterval = 1.5
+    private static let expandCollapseDelay: TimeInterval = 0.42
     /// 探出态离开后的收回延迟
-    private static let peekCollapseDelay: TimeInterval = 0.35
+    private static let peekCollapseDelay: TimeInterval = 0.22
 
     private let state: AppState
     private let panelFrame: () -> NSRect?
     private var monitor: Any?
+    private var localMonitor: Any?
     private var expandWork: DispatchWorkItem?
     private var collapseWork: DispatchWorkItem?
 
@@ -25,11 +26,22 @@ final class HotZone {
         self.state = state
         self.panelFrame = panelFrame
 
-        monitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved]) { [weak self] _ in
+        monitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged]) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.handleMouseMove()
             }
         }
+        localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged]) { [weak self] event in
+            Task { @MainActor [weak self] in
+                self?.handleMouseMove()
+            }
+            return event
+        }
+    }
+
+    deinit {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        if let localMonitor { NSEvent.removeMonitor(localMonitor) }
     }
 
     /// 触发区 = 刘海矩形本身（屏幕顶部中央 74×37）
@@ -51,7 +63,7 @@ final class HotZone {
     /// 只有已探出/展开时，"面板区域"才算内部（用于保持展开）；
     /// 收起状态下窗口是透明的，其下方区域不应触发展开
     private func mouseIsInsidePanel(_ mouse: NSPoint) -> Bool {
-        guard state.deckState != .collapsed else { return false }
+        guard state.deckState == .expanded else { return false }
         return panelFrame()?.insetBy(dx: -10, dy: -10).contains(mouse) ?? false
     }
 
@@ -75,7 +87,11 @@ final class HotZone {
             }
         } else {
             cancelExpand()
-            scheduleCollapse()
+            if state.isEditingTask {
+                cancelCollapse()
+            } else {
+                scheduleCollapse()
+            }
         }
     }
 

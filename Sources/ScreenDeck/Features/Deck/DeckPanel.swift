@@ -43,6 +43,7 @@ final class DeckPanel: NSPanel {
         becomesKeyOnlyIfNeeded = true
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         animationBehavior = .none
+        acceptsMouseMovedEvents = true
         contentView = hostingView
 
         // 展开时接收点击，收起时鼠标穿透（菜单栏/下方应用不受影响）

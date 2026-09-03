@@ -127,6 +127,32 @@ final class VaultServiceTests: XCTestCase {
         XCTAssertEqual(reverted.done, 0)
     }
 
+    func testUpdateTaskTextPreservesCheckboxAndCRLF() throws {
+        let vault = makeVault(format: "YYYY-MM-DD")
+        writeDailyNote("""
+        ## 任务
+        \t- [x] 原任务
+
+        """, folder: "日记", lineEnding: "\r\n")
+
+        let service = VaultService(vaultPath: vault.path, taskSection: "任务")
+        let updated = try service.updateTaskText(line: 2, text: "  新任务  ")
+        XCTAssertEqual(updated.tasks?.first?.text, "新任务")
+        XCTAssertEqual(updated.tasks?.first?.done, true)
+
+        let raw = try Data(contentsOf: vault.appendingPathComponent("日记/\(todayName).md"))
+        let text = String(decoding: raw, as: UTF8.self)
+        XCTAssertTrue(text.contains("\t- [x] 新任务\r\n"))
+        XCTAssertFalse(text.contains("原任务"))
+    }
+
+    func testUpdateTaskTextRejectsEmptyText() throws {
+        let vault = makeVault(format: "YYYY-MM-DD")
+        writeDailyNote("## 任务\n- [ ] A\n", folder: "日记", lineEnding: "\n")
+        let service = VaultService(vaultPath: vault.path, taskSection: nil)
+        XCTAssertThrowsError(try service.updateTaskText(line: 2, text: "   "))
+    }
+
     // MARK: - 错误处理
 
     func testMissingDailyNote() throws {

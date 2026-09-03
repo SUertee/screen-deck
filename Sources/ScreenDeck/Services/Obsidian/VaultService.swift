@@ -205,6 +205,39 @@ struct VaultService {
         return payload(from: newContent, url: url)
     }
 
+    /// 更新第 line 行的任务文字，保留缩进、checkbox 和原行尾。
+    func updateTaskText(line: Int, text: String) throws -> TasksPayload {
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else {
+            throw VaultError.emptyTaskText
+        }
+
+        let url = try dailyNoteURL()
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw VaultError.noteMissing(relativePath(url))
+        }
+        let content = try String(contentsOf: url, encoding: .utf8)
+        let ns = content as NSString
+        var lines: [String] = []
+        var range = NSRange(location: 0, length: 0)
+        while range.location < ns.length {
+            let r = ns.lineRange(for: NSRange(location: range.location, length: 0))
+            lines.append(ns.substring(with: r))
+            range.location = r.location + r.length
+        }
+
+        guard (1...lines.count).contains(line) else {
+            throw VaultError.badLine(line)
+        }
+        guard let updated = Self.replaceTaskText(in: lines[line - 1], with: normalized) else {
+            throw VaultError.notATask(line)
+        }
+        lines[line - 1] = updated
+        let newContent = lines.joined()
+        try newContent.write(to: url, atomically: true, encoding: .utf8)
+        return payload(from: newContent, url: url)
+    }
+
     /// 只翻转勾选标记，行其余内容（含行尾符）原样保留
     static func flipCheckbox(in line: String) -> String? {
         let ns = line as NSString
@@ -216,6 +249,32 @@ struct VaultService {
         let mark = ns.substring(with: markRange)
         let newMark = mark.lowercased() == "x" ? " " : "x"
         return ns.replacingCharacters(in: markRange, with: newMark)
+    }
+
+    /// 只替换任务内容，行尾不参与正则匹配，避免 CRLF 被改写。
+    static func replaceTaskText(in line: String, with text: String) -> String? {
+        let lineEnding: String
+        let body: String
+        if line.hasSuffix("\r\n") {
+            lineEnding = "\r\n"
+            body = String(line.dropLast(2))
+        } else if line.hasSuffix("\n") || line.hasSuffix("\r") {
+            lineEnding = String(line.suffix(1))
+            body = String(line.dropLast())
+        } else {
+            lineEnding = ""
+            body = line
+        }
+
+        let ns = body as NSString
+        guard let match = taskRegex.firstMatch(
+            in: body,
+            options: [],
+            range: NSRange(location: 0, length: ns.length)
+        ) else {
+            return nil
+        }
+        return ns.replacingCharacters(in: match.range(at: 3), with: text) + lineEnding
     }
 
     private func payload(from content: String, url: URL) -> TasksPayload {
@@ -238,6 +297,7 @@ enum VaultError: LocalizedError {
     case noteMissing(String)
     case badLine(Int)
     case notATask(Int)
+    case emptyTaskText
 
     var errorDescription: String? {
         switch self {
@@ -246,6 +306,7 @@ enum VaultError: LocalizedError {
         case .noteMissing(let path): return "今日日记不存在: \(path)"
         case .badLine(let n): return "行号越界: \(n)"
         case .notATask(let n): return "第 \(n) 行不是任务"
+        case .emptyTaskText: return "任务内容不能为空"
         }
     }
 }

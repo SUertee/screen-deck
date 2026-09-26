@@ -1,10 +1,11 @@
 import SwiftUI
 
 /// Deck 面板内容（纯 SwiftUI 动效，窗口尺寸恒定）：
-/// - 收起态：顶部一条 74×37 纯黑矩形（= 刘海本身，视觉无痕）
-/// - 探出态：黑矩形下移 12pt（抽屉拉开一条缝）
-/// - 展开态：黑矩形隐藏，纸张以顶部为轴纵向铺开
+/// - 收起态：与系统刘海宽度一致的顶部把手
+/// - 探出态：把手轻微延长，保持与顶部连续
+/// - 展开态：背景裁切展开；文字和点击位置不缩放、不随鼠标位移
 struct DeckPanelView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var state: AppState
     let onTogglePanel: () -> Void
 
@@ -12,20 +13,18 @@ struct DeckPanelView: View {
     @State private var editingTaskID: Int?
     @State private var editDraft = ""
     @State private var hoverPoint: CGPoint?
+    @State private var confirmClose = false
+    @State private var editError: String?
     @FocusState private var focusedTaskID: Int?
 
     private var isExpanded: Bool { state.deckState == .expanded }
     private var isPeeked: Bool { state.deckState == .peeked }
-
-    private var magneticOffset: CGSize {
-        guard let hoverPoint, isExpanded else { return .zero }
-        let x = ((hoverPoint.x / DeckPanel.expandedWidth) - 0.5) * 4
-        let y = ((hoverPoint.y / DeckPanel.expandedHeight) - 0.5) * 2
-        return CGSize(width: x, height: y)
-    }
+    private var panelSize: CGSize { DeckMotion.contentSize(hasTasks: !state.tasks.isEmpty) }
 
     private var highlightOffset: CGSize {
-        CGSize(width: magneticOffset.width * 5, height: magneticOffset.height * 5)
+        DeckMotion.highlight(at: hoverPoint,
+                             size: CGSize(width: DeckPanel.expandedWidth, height: DeckPanel.expandedHeight),
+                             enabled: isExpanded && !reduceMotion && !state.isEditingTask)
     }
 
     var body: some View {
@@ -34,32 +33,30 @@ struct DeckPanelView: View {
             glassPanel
                 .mask(alignment: .top) {
                     RoundedRectangle(cornerRadius: isExpanded ? 18 : 11, style: .continuous)
-                        .frame(height: isExpanded
-                            ? DeckPanel.expandedHeight
+                        .frame(width: isExpanded || reduceMotion ? panelSize.width : DeckPanel.notchWidth,
+                               height: isExpanded || reduceMotion
+                            ? panelSize.height
                             : DeckPanel.menuBarHeight() + (isPeeked ? 18 : 0))
                 }
-                .scaleEffect(x: isExpanded ? 1 : 0.96, y: 1, anchor: .top)
-                .offset(magneticOffset)
                 .opacity(isExpanded ? 1 : 0)
                 .allowsHitTesting(isExpanded)
+                .accessibilityHidden(!isExpanded)
 
-            // 刘海本身：收起时居中，探出时下移一条缝
+            // 顶边保持锚定，探出时只延长把手。
             notchRect
-                .scaleEffect(isPeeked ? 1.04 : 1, anchor: .top)
-                .offset(y: isPeeked ? 8 : 0)
                 .opacity(isExpanded ? 0 : 1)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
         }
-        .frame(width: DeckPanel.expandedWidth,
-               height: DeckPanel.expandedHeight,
+        .frame(width: panelSize.width,
+               height: panelSize.height,
                alignment: .top)
         .environment(\.colorScheme, .dark)
-        .animation(
-            isExpanded
-                ? .spring(response: 0.38, dampingFraction: 0.78)
-                : .spring(response: 0.28, dampingFraction: 0.9),
-            value: state.deckState
-        )
-        .animation(.spring(response: 0.22, dampingFraction: 0.82), value: magneticOffset)
+        .confirmationDialog("放弃未保存的修改并收起？", isPresented: $confirmClose, titleVisibility: .visible) {
+            Button("放弃修改并收起", role: .destructive) { cancelEditing(); onTogglePanel() }
+            Button("继续编辑", role: .cancel) { }
+        }
+        .animation(DeckMotion.transition(to: state.deckState, reduceMotion: reduceMotion), value: state.deckState)
         .onContinuousHover { phase in
             switch phase {
             case .active(let location):
@@ -70,6 +67,8 @@ struct DeckPanelView: View {
         }
         .onChange(of: state.deckState) { _, newState in
             if newState != .expanded {
+                hoverPoint = nil
+                hoveredTaskID = nil
                 cancelEditing()
             }
         }
@@ -80,7 +79,8 @@ struct DeckPanelView: View {
     private var notchRect: some View {
         RoundedRectangle(cornerRadius: 11, style: .continuous)
             .fill(Color.black)
-            .frame(width: DeckPanel.notchWidth, height: DeckPanel.menuBarHeight())
+            .frame(width: DeckPanel.notchWidth,
+                   height: DeckPanel.menuBarHeight() + (isPeeked && !reduceMotion ? 8 : 0))
             .overlay(
                 RoundedRectangle(cornerRadius: 11, style: .continuous)
                     .strokeBorder(Color.white.opacity(isPeeked ? 0.18 : 0.05), lineWidth: 1)
@@ -95,21 +95,20 @@ struct DeckPanelView: View {
             RoundedRectangle(cornerRadius: 11, style: .continuous)
                 .fill(Color.black)
                 .frame(width: DeckPanel.notchWidth, height: DeckPanel.menuBarHeight())
-                .overlay(
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.5))
-                        .offset(y: 9)
-                )
 
             VStack(spacing: 0) {
                 handleBar
                 taskList
+                if let editError {
+                    Text(editError).font(.caption).foregroundStyle(.orange).padding(.horizontal, 16)
+                }
+                Color.clear.frame(height: 12)
             }
             .opacity(isExpanded ? 1 : 0)
-            .offset(y: isExpanded ? 0 : -8)
-            .animation(.easeOut(duration: isExpanded ? 0.2 : 0.1), value: isExpanded)
+            .offset(y: isExpanded || reduceMotion ? 0 : -4)
+            .animation(.easeOut(duration: reduceMotion ? 0.1 : (isExpanded ? 0.18 : 0.1)), value: isExpanded)
         }
+        .frame(width: panelSize.width, height: panelSize.height, alignment: .top)
         .background(glassBackground)
     }
 
@@ -120,37 +119,64 @@ struct DeckPanelView: View {
                 .foregroundStyle(Color(red: 0.68, green: 0.55, blue: 1.0))
             Text(state.sectionTitle)
                 .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.white)
+                .foregroundStyle(.white.opacity(0.85))
             Spacer()
-            if state.dataAvailable {
-                Text("\(state.done)/\(state.total)")
+            if state.dataAvailable && state.total > 0 {
+                Text("已完成 \(state.done) / \(state.total)")
                     .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(Color(red: 0.6, green: 0.8, blue: 1.0))
+                    .foregroundStyle(.white.opacity(0.65))
             }
+            Button {
+                state.isPanelPinned.toggle()
+            } label: {
+                Image(systemName: state.isPanelPinned ? "pin.fill" : "pin")
+                    .frame(width: 24, height: 28)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(state.isPanelPinned ? Color.accentColor : .white.opacity(0.6))
+            .help(state.isPanelPinned ? "取消固定展开" : "保持展开")
+            .accessibilityLabel(state.isPanelPinned ? "取消固定展开" : "保持展开")
+            Button { if editingTaskID != nil { confirmClose = true } else { onTogglePanel() } } label: {
+                Image(systemName: "chevron.up")
+                    .frame(width: 24, height: 28)
+            }
+            .buttonStyle(.plain)
+            .help("收起面板")
+            .accessibilityLabel("收起面板")
         }
         .padding(.horizontal, 16)
-        .frame(height: 44)
+        .frame(height: 40)
         .contentShape(Rectangle())
-        .onTapGesture { onTogglePanel() }
     }
 
     // MARK: - 任务列表
 
     private var taskList: some View {
         ScrollView {
-            LazyVStack(spacing: 1) {
-                if state.tasks.isEmpty {
+            if state.tasks.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(state.dataAvailable ? "还没有任务" : "暂时无法读取任务")
+                        .font(.system(size: 15, weight: .medium))
                     Text(state.statusMessage)
-                        .font(.system(size: 12))
+                        .font(.system(size: 11))
                         .foregroundStyle(.white.opacity(0.6))
-                        .padding(.vertical, 24)
-                } else {
+                        .fixedSize(horizontal: false, vertical: true)
+                    if !state.dataAvailable {
+                        Button("重新读取") { state.refresh() }.buttonStyle(.bordered)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 22)
+                .padding(.vertical, 12)
+            } else {
+                LazyVStack(spacing: 6) {
                     ForEach(state.tasks) { task in
                         taskRow(task)
                     }
                 }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 6)
             }
-            .padding(.vertical, 6)
         }
     }
 
@@ -166,6 +192,8 @@ struct DeckPanelView: View {
                         : Color.white.opacity(0.5))
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(task.done ? "标记为未完成" : "标记为完成")
+            .disabled(editingTaskID != nil || !state.dataAvailable)
 
             if editingTaskID == task.id {
                 TextField("任务内容", text: $editDraft)
@@ -180,44 +208,57 @@ struct DeckPanelView: View {
                     .font(.system(size: 12.5))
                     .foregroundStyle(task.done ? Color.white.opacity(0.45) : .white)
                     .strikethrough(task.done, color: .white.opacity(0.4))
-                    .lineLimit(1)
+                    .lineLimit(3)
                     .contentShape(Rectangle())
                     .onTapGesture(count: 2) { beginEditing(task) }
             }
             Spacer(minLength: 0)
 
-            if editingTaskID == task.id {
-                Button { saveEditing(task) } label: {
-                    Image(systemName: "checkmark")
+            HStack(spacing: 8) {
+                if editingTaskID == task.id {
+                    Button { saveEditing(task) } label: {
+                        Image(systemName: "checkmark")
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("保存任务")
+                    Button { cancelEditing() } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("取消编辑")
+                } else {
+                    Button { beginEditing(task) } label: {
+                        Image(systemName: "pencil")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.65))
+                    }
+                    .buttonStyle(.plain)
+                    .opacity(hoveredTaskID == task.id ? 1 : 0.45)
+                    .help("编辑任务")
+                    .accessibilityLabel("编辑任务")
                 }
-                .buttonStyle(.plain)
-                Button { cancelEditing() } label: {
-                    Image(systemName: "xmark")
-                }
-                .buttonStyle(.plain)
-            } else if hoveredTaskID == task.id {
-                Button { beginEditing(task) } label: {
-                    Image(systemName: "pencil")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.65))
-                }
-                .buttonStyle(.plain)
-                .transition(.opacity.combined(with: .scale(scale: 0.85)))
             }
+            .frame(width: 44, alignment: .trailing)
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 5)
+        .frame(minHeight: 48)
         .contentShape(Rectangle())
-        .background(Color.white.opacity(0.05))
-        .clipShape(RoundedRectangle(cornerRadius: 7))
+        .background(Color.white.opacity(hoveredTaskID == task.id || editingTaskID == task.id ? 0.11 : 0.045))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16)
+                .strokeBorder(Color.white.opacity(hoveredTaskID == task.id ? 0.22 : 0.07))
+                .allowsHitTesting(false)
+        }
         .onHover { isHovering in
-            withAnimation(.easeOut(duration: 0.12)) {
+            withAnimation(.easeOut(duration: reduceMotion ? 0 : 0.12)) {
                 hoveredTaskID = isHovering ? task.id : (hoveredTaskID == task.id ? nil : hoveredTaskID)
             }
         }
     }
 
     private func beginEditing(_ task: TaskItem) {
+        guard state.dataAvailable, editingTaskID == nil else { return }
         editingTaskID = task.id
         editDraft = task.text
         state.setEditingTask(true)
@@ -227,11 +268,15 @@ struct DeckPanelView: View {
     }
 
     private func saveEditing(_ task: TaskItem) {
-        guard state.updateText(for: task, to: editDraft) else { return }
+        guard state.updateText(for: task, to: editDraft) else {
+            editError = state.statusMessage
+            return
+        }
         cancelEditing()
     }
 
     private func cancelEditing() {
+        editError = nil
         editingTaskID = nil
         focusedTaskID = nil
         editDraft = ""
@@ -247,18 +292,10 @@ struct DeckPanelView: View {
     private var glassBackground: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(.ultraThinMaterial)
+                .fill(Color.black)
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [.white.opacity(0.18), .white.opacity(0.02)],
-                        startPoint: .top,
-                        endPoint: .center
-                    )
-                )
-                .offset(highlightOffset)
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.22), lineWidth: 1)
+                .strokeBorder(Color.white.opacity(0.07), lineWidth: 1)
+                .padding(.top, DeckPanel.menuBarHeight())
         }
         .shadow(color: .black.opacity(0.35), radius: 16, y: 8)
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))

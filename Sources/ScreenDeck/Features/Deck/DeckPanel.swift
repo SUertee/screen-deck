@@ -5,17 +5,24 @@ import Combine
 /// Deck 主窗口：尺寸固定为展开态，所有动效由 SwiftUI 内部完成
 /// （收起时窗口透明 + 鼠标穿透，视觉上只剩刘海里那条黑矩形）
 final class DeckPanel: NSPanel {
-    /// 刘海宽度（MacBook Pro 14/16" 硬件规格 ≈74pt；MacBook Air ≈126pt）
-    static let notchWidth: CGFloat = 74
+    /// 使用系统提供的刘海两侧区域，无刘海屏幕保留顶部入口。
+    static var notchWidth: CGFloat {
+        guard let screen = NSScreen.main,
+              let left = screen.auxiliaryTopLeftArea,
+              let right = screen.auxiliaryTopRightArea else { return 160 }
+        return max(74, right.minX - left.maxX)
+    }
     /// 探出时抽屉多拉出的高度
     static let peekExtension: CGFloat = 26
     /// 展开态面板宽度/高度（也是窗口固定尺寸）
-    static let expandedWidth: CGFloat = 340
-    static let expandedHeight: CGFloat = 500
+    static let expandedWidth: CGFloat = 620
+    static let expandedHeight: CGFloat = 360
 
     private let state: AppState
     private var cancellables = Set<AnyCancellable>()
     private var hotZone: HotZone?
+
+    override var canBecomeKey: Bool { true }
 
     init(state: AppState) {
         self.state = state
@@ -46,6 +53,17 @@ final class DeckPanel: NSPanel {
         acceptsMouseMovedEvents = true
         contentView = hostingView
 
+        state.$tasks.map { !$0.isEmpty }.removeDuplicates()
+            .sink { [weak self] hasTasks in
+                guard let self else { return }
+                let size = DeckMotion.contentSize(hasTasks: hasTasks)
+                let top = self.frame.maxY
+                let center = self.frame.midX
+                self.setFrame(NSRect(x: center - size.width / 2, y: top - size.height,
+                                     width: size.width, height: size.height), display: true)
+            }
+            .store(in: &cancellables)
+
         // 展开时接收点击，收起时鼠标穿透（菜单栏/下方应用不受影响）
         state.$deckState
             .sink { [weak self] newState in
@@ -62,6 +80,7 @@ final class DeckPanel: NSPanel {
     // MARK: - 对外控制
 
     func toggle() {
+        guard !state.isEditingTask else { return }
         switch state.deckState {
         case .collapsed, .peeked:
             state.deckState = .expanded
@@ -71,7 +90,6 @@ final class DeckPanel: NSPanel {
     }
 
     func show() {
-        setFrame(Self.windowFrame(), display: true)
         orderFrontRegardless()
     }
 
@@ -80,7 +98,7 @@ final class DeckPanel: NSPanel {
     /// 菜单栏高度（刘海 Mac 上 = 37pt）
     static func menuBarHeight() -> CGFloat {
         guard let screen = NSScreen.main else { return 37 }
-        return screen.frame.maxY - screen.visibleFrame.maxY
+        return max(24, screen.safeAreaInsets.top)
     }
 
     static func windowFrame() -> NSRect {

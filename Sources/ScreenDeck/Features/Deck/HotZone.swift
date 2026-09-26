@@ -1,30 +1,46 @@
 import AppKit
+import Combine
 
-/// 鼠标热区：严格限定为刘海矩形本身（74×37），鼠标只在刘海上才会触发。
+/// 鼠标热区：按系统刘海宽度计算，悬停触发，不依赖点击。
 /// 交互节奏（抽屉手感）：
 ///   1. 鼠标进入刘海 → 立即"探出"（抽屉拉开一条缝，.peeked）
-///   2. 停留 0.12s 仍在内 → 完全展开（.expanded）
-///   3. 鼠标离开 → 收起：展开态 0.42s 后收起，探出态 0.22s 后收回
+///   2. 停留 0.16s 仍在内 → 完全展开（.expanded）
+///   3. 鼠标离开仅收回探出态；展开后点击外部收起，编辑/固定时保持。
 /// 同时使用全局与应用内鼠标监听，不需要辅助功能权限。
 @MainActor
 final class HotZone {
-    /// 探出 → 展开的停留判定
-    private static let expandDelay: TimeInterval = 0.12
-    /// 展开态离开后的收起延迟
-    private static let expandCollapseDelay: TimeInterval = 0.42
-    /// 探出态离开后的收回延迟
-    private static let peekCollapseDelay: TimeInterval = 0.22
-
     private let state: AppState
     private let panelFrame: () -> NSRect?
     private var monitor: Any?
     private var localMonitor: Any?
+    private var clickMonitor: Any?
+    private var localClickMonitor: Any?
     private var expandWork: DispatchWorkItem?
     private var collapseWork: DispatchWorkItem?
+    private var cancellables = Set<AnyCancellable>()
 
     init(state: AppState, panelFrame: @escaping () -> NSRect?) {
         self.state = state
         self.panelFrame = panelFrame
+
+        // Reevaluate after editing/pinning changes even if the mouse is stationary.
+        // Published emits before assignment, so deliver on the next main-loop turn.
+        state.$isEditingTask.combineLatest(state.$isPanelPinned)
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.cancelCollapse()
+                guard self.state.deckState != .collapsed else { return }
+                self.handleMouseMove()
+            }
+            .store(in: &cancellables)
+        state.$deckState.dropFirst()
+            .sink { [weak self] _ in
+                self?.cancelExpand()
+                self?.cancelCollapse()
+            }
+            .store(in: &cancellables)
 
         monitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged]) { [weak self] _ in
             Task { @MainActor [weak self] in
@@ -37,14 +53,33 @@ final class HotZone {
             }
             return event
         }
+        clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.handleOutsideClick() }
+        }
+        localClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+            Task { @MainActor [weak self] in self?.handleOutsideClick() }
+            return event
+        }
     }
 
     deinit {
+        expandWork?.cancel()
+        collapseWork?.cancel()
         if let monitor { NSEvent.removeMonitor(monitor) }
         if let localMonitor { NSEvent.removeMonitor(localMonitor) }
+        if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }
+        if let localClickMonitor { NSEvent.removeMonitor(localClickMonitor) }
     }
 
-    /// 触发区 = 刘海矩形本身（屏幕顶部中央 74×37）
+    private func handleOutsideClick() {
+        guard DeckMotion.allowsOutsideDismiss(state: state.deckState,
+                                               editing: state.isEditingTask,
+                                               pinned: state.isPanelPinned),
+              let frame = panelFrame(), !frame.contains(NSEvent.mouseLocation) else { return }
+        state.deckState = .collapsed
+    }
+
+    /// 触发区 = 屏幕顶部中央入口，宽度与面板把手一致。
     private func hotRect() -> NSRect {
         guard let screen = NSScreen.main else { return .zero }
         let menuBarH = DeckPanel.menuBarHeight()
@@ -87,7 +122,9 @@ final class HotZone {
             }
         } else {
             cancelExpand()
-            if state.isEditingTask {
+            if !DeckMotion.allowsAutoCollapse(state: state.deckState,
+                                             editing: state.isEditingTask,
+                                             pinned: state.isPanelPinned) {
                 cancelCollapse()
             } else {
                 scheduleCollapse()
@@ -101,13 +138,14 @@ final class HotZone {
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.expandWork = nil
+            guard self.state.deckState == .peeked else { return }
             let mouse = NSEvent.mouseLocation
             if self.mouseIsInsideHotZone(mouse) || self.mouseIsInsidePanel(mouse) {
                 self.state.deckState = .expanded
             }
         }
         expandWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.expandDelay, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + DeckMotion.expandDelay, execute: work)
     }
 
     private func cancelExpand() {
@@ -116,14 +154,21 @@ final class HotZone {
     }
 
     private func scheduleCollapse() {
-        guard collapseWork == nil else { return }
+        guard collapseWork == nil,
+              DeckMotion.allowsAutoCollapse(state: state.deckState,
+                                            editing: state.isEditingTask,
+                                            pinned: state.isPanelPinned) else { return }
+        let scheduledState = state.deckState
         let delay: TimeInterval = state.deckState == .peeked
-            ? Self.peekCollapseDelay
-            : Self.expandCollapseDelay
+            ? DeckMotion.peekLeaveDelay
+            : DeckMotion.expandedLeaveDelay
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.collapseWork = nil
-            guard !self.state.isEditingTask else { return }
+            guard self.state.deckState == scheduledState,
+                  DeckMotion.allowsAutoCollapse(state: self.state.deckState,
+                                                editing: self.state.isEditingTask,
+                                                pinned: self.state.isPanelPinned) else { return }
             let mouse = NSEvent.mouseLocation
             guard !self.mouseIsInsideHotZone(mouse), !self.mouseIsInsidePanel(mouse) else {
                 return

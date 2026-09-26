@@ -18,6 +18,7 @@ final class AppState: ObservableObject {
     @Published var statusMessage = "读取中…"
     @Published var deckState: DeckState = .collapsed
     @Published private(set) var isEditingTask = false
+    @Published var isPanelPinned = false
 
     @Published private(set) var dataAvailable = false
 
@@ -50,6 +51,7 @@ final class AppState: ObservableObject {
 
     /// 直读今日日记（无 HTTP，文件 IO 很快）
     func refresh() {
+        guard !isEditingTask else { return }
         do {
             apply(try vault.fetchTasks())
         } catch {
@@ -92,7 +94,7 @@ final class AppState: ObservableObject {
         if !dataAvailable {
             statusMessage = payload.error ?? "暂无任务数据"
         } else if total == 0 {
-            statusMessage = "今天没有任务 🎉"
+            statusMessage = "在 Obsidian 的对应分组添加任务后，这里会自动更新。"
         }
     }
 }

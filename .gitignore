@@ -8,7 +8,11 @@
 *.xcuserstate
 xcuserdata/
 .swiftpm/
+.finesse/
 
 # 私人文档（如有：定价策略、个人想法草稿）
 docs/
 /DESIGN.md
+
+# 本机 Agent 执行历史（保留本地，不随源码同步）
+/AGENTLOG.md

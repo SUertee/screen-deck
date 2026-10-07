@@ -1,0 +1,9 @@
+# 本地任务、运行与附件默认不随源码提交；共享需要显式确认。
+/tasks/
+/runs/
+/artifacts/
+
+# 协作锁和迁移回退暂存不属于共享项目设置。
+/.project.json.lock
+/.project-history-migration.lock
+/.history-migration-*/

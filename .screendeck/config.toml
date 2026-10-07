@@ -1,0 +1,17 @@
+# Shared declarations only. Loading this file never starts commands or grants permission.
+config_version = 1
+
+[workspace]
+editable_roots = ["Sources", "Tests"]
+protected_paths = [".git", ".screendeck/project.json"]
+ignored_paths = [".build", ".swiftpm"]
+
+[validation]
+test_argv = ["swift", "test"]
+build_argv = ["swift", "build", "-c", "release"]
+
+[documentation]
+directory = "docs"
+
+[handoff]
+summary_path = "AGENTLOG.md"

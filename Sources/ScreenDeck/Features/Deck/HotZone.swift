@@ -11,6 +11,7 @@ import Combine
 final class HotZone {
     private let state: AppState
     private let panelFrame: () -> NSRect?
+    private let hotRect: () -> NSRect
     private var monitor: Any?
     private var localMonitor: Any?
     private var clickMonitor: Any?
@@ -19,9 +20,10 @@ final class HotZone {
     private var collapseWork: DispatchWorkItem?
     private var cancellables = Set<AnyCancellable>()
 
-    init(state: AppState, panelFrame: @escaping () -> NSRect?) {
+    init(state: AppState, hotRect: @escaping () -> NSRect, panelFrame: @escaping () -> NSRect?) {
         self.state = state
         self.panelFrame = panelFrame
+        self.hotRect = hotRect
 
         // Reevaluate after editing/pinning changes even if the mouse is stationary.
         // Published emits before assignment, so deliver on the next main-loop turn.
@@ -79,16 +81,10 @@ final class HotZone {
         state.deckState = .collapsed
     }
 
-    /// 触发区 = 屏幕顶部中央入口，宽度与面板把手一致。
-    private func hotRect() -> NSRect {
-        guard let screen = NSScreen.main else { return .zero }
-        let menuBarH = DeckPanel.menuBarHeight()
-        return NSRect(
-            x: screen.frame.midX - DeckPanel.notchWidth / 2,
-            y: screen.frame.maxY - menuBarH,
-            width: DeckPanel.notchWidth,
-            height: menuBarH
-        )
+    func displayDidChange() {
+        cancelExpand()
+        cancelCollapse()
+        handleMouseMove()
     }
 
     private func mouseIsInsideHotZone(_ mouse: NSPoint) -> Bool {

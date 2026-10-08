@@ -21,6 +21,12 @@ struct ScreenDeckPaths {
     var workspace: URL { workspace(in: .global) }
     var projectConversations: URL { projectConversations(in: .global) }
     var sessions: URL { sessions(in: .global) }
+    // Dialogue history is independent of legacy workspace/capture storage and is never dual-written.
+    var sessionHistory: URL { root.appendingPathComponent("sessions", isDirectory: true) }
+    // Detection only: existing pre-rename history requires an explicit migration, not an empty new library.
+    var previousSessionHistory: URL { root.appendingPathComponent("conversations/history", isDirectory: true) }
+    var previousFlatSessionHistory: URL { root.appendingPathComponent("sessions/history", isDirectory: true) }
+    var previousSessionHistoryRoots: [URL] { [previousFlatSessionHistory, previousSessionHistory] }
     var migrationMarker: URL { root.appendingPathComponent("storage-migration.json") }
 
     func activeLocation() throws -> ScreenDeckStorageLocation {

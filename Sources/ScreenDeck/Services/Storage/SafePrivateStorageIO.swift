@@ -6,10 +6,109 @@ struct SafePrivateStorageError: LocalizedError {
     var errorDescription: String? { "私人数据：\(reason)" }
 }
 
+struct PrivateStorageDirectoryEntry: Equatable {
+    enum Kind: Equatable { case directory, regularFile, other }
+    let name: String
+    let kind: Kind
+}
+
+enum PrivateStorageDirectoryError: LocalizedError, Equatable {
+    case directoryChanged, tooManyEntries
+
+    var errorDescription: String? {
+        switch self {
+        case .directoryChanged: return "私人数据：读取期间目录发生变化，请重试"
+        case .tooManyEntries: return "私人数据：目录条目超过读取上限"
+        }
+    }
+}
+
 /// Shared private JSON I/O. URLs are injected; loading never creates data.
 /// Arbitrary symlink ancestors/leaves are forbidden even if introduced after construction.
 enum SafePrivateStorageIO {
     static let defaultMaximumBytes = 32 * 1024 * 1024
+    static let defaultMaximumDirectoryEntries = 100_000
+
+    /// Read-only directory detection with the same no-symlink traversal as private file I/O.
+    /// Missing components are absent; inaccessible, non-directory or linked components are errors.
+    static func directoryExists(_ url: URL) throws -> Bool {
+        let descriptor: Int32
+        do { descriptor = try openParent(url.appendingPathComponent(".directory-validation"), create: false) }
+        catch Missing.parent { return false }
+        defer { close(descriptor) }
+        return true
+    }
+
+    /// A bounded, read-only snapshot. Only a missing directory returns nil.
+    /// Child links are reported as other; neither the directory path nor its children follow links.
+    static func directoryEntries(_ url: URL, maximumEntries: Int) throws -> [PrivateStorageDirectoryEntry]? {
+        guard maximumEntries > 0, maximumEntries <= defaultMaximumDirectoryEntries else {
+            throw issue("目录读取上限无效")
+        }
+        let directoryPath = url.appendingPathComponent(".directory-validation")
+        let descriptor: Int32
+        do { descriptor = try openParent(directoryPath, create: false) }
+        catch Missing.parent { return nil }
+        guard let stream = fdopendir(descriptor) else {
+            close(descriptor)
+            throw issue("无法读取数据目录")
+        }
+        defer { closedir(stream) }
+        var before = stat()
+        guard fstat(descriptor, &before) == 0, before.st_mode & S_IFMT == S_IFDIR else {
+            throw issue("位置必须是目录")
+        }
+        var entries: [PrivateStorageDirectoryEntry] = []
+        while true {
+            errno = 0
+            guard let entry = readdir(stream) else {
+                guard errno == 0 else { throw issue("读取目录失败") }
+                break
+            }
+            let nameLength = Int(entry.pointee.d_namlen)
+            let name = try withUnsafeBytes(of: &entry.pointee.d_name) { bytes -> String in
+                guard nameLength > 0, nameLength < bytes.count, bytes[nameLength] == 0,
+                      let value = String(bytes: bytes.prefix(nameLength), encoding: .utf8),
+                      !value.contains("/"), !value.contains("\0") else {
+                    throw issue("目录条目名称无效")
+                }
+                return value
+            }
+            if name == "." || name == ".." { continue }
+            guard entries.count < maximumEntries else { throw PrivateStorageDirectoryError.tooManyEntries }
+            var info = stat()
+            guard fstatat(descriptor, name, &info, AT_SYMLINK_NOFOLLOW) == 0 else {
+                if errno == ENOENT { throw PrivateStorageDirectoryError.directoryChanged }
+                throw issue("目录条目不可读")
+            }
+            guard entry.pointee.d_ino == 0 || entry.pointee.d_ino == info.st_ino else {
+                throw PrivateStorageDirectoryError.directoryChanged
+            }
+            let kind: PrivateStorageDirectoryEntry.Kind
+            switch info.st_mode & S_IFMT {
+            case S_IFDIR: kind = .directory
+            case S_IFREG: kind = .regularFile
+            default: kind = .other
+            }
+            entries.append(.init(name: name, kind: kind))
+        }
+        let currentDirectory: Int32
+        do { currentDirectory = try openParent(directoryPath, create: false) }
+        catch { throw PrivateStorageDirectoryError.directoryChanged }
+        defer { close(currentDirectory) }
+        do { try sameDirectory(descriptor, currentDirectory) }
+        catch { throw PrivateStorageDirectoryError.directoryChanged }
+        var after = stat()
+        guard fstat(descriptor, &after) == 0,
+              before.st_dev == after.st_dev, before.st_ino == after.st_ino,
+              before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec,
+              before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
+              before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec,
+              before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec else {
+            throw PrivateStorageDirectoryError.directoryChanged
+        }
+        return entries
+    }
 
     static func read(_ url: URL, maximumBytes: Int) throws -> Data? {
         guard maximumBytes > 0, maximumBytes <= defaultMaximumBytes else { throw issue("读取上限无效") }

@@ -160,10 +160,14 @@ final class ProjectWorkbenchRenderTests: XCTestCase {
         let end = try XCTUnwrap(source.range(of: "private var isChat: Bool", range: start.upperBound..<source.endIndex))
         let center = String(source[start.lowerBound..<end.lowerBound])
         XCTAssertTrue(center.contains("case .project:"))
-        XCTAssertTrue(center.contains("projectChatWelcome\n            composer"))
+        XCTAssertTrue(center.contains("if let conversation = activeConversation"), "The center may display already-sent chat history")
+        XCTAssertTrue(center.contains("projectChatWelcome"), "An empty project still has the conversational welcome")
+        XCTAssertTrue(center.contains("composer"))
         XCTAssertFalse(center.contains("ProjectRecordContentView"), "Source details belong in the right inspector, not the conversation center")
         XCTAssertTrue(source.contains("accessibilityLabel(\"本地对话草稿\")"))
-        XCTAssertTrue(source.contains("accessibilityLabel(\"发送不可用，尚未连接 AI\")"))
+        XCTAssertTrue(source.contains(".disabled(!activeGeneration && !canSendDraft)"), "Send stays disabled until the actual controller permits it")
+        XCTAssertTrue(source.contains("return chat.canSend(scope: scope)"), "The view must not bypass connection, model, consent or persistence gates")
+        XCTAssertTrue(source.contains("accessibilityLabel(activeGeneration ? \"停止回复\" : \"发送消息\")"))
         XCTAssertTrue(source.contains("ProjectTaskInspectorView(snapshot:"))
     }
 

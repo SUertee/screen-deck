@@ -20,6 +20,7 @@ struct MainWorkbenchView: View {
     @ObservedObject var projects = ProjectWorkspaceController()
     @ObservedObject var projectConversations = ProjectConversationController()
     @ObservedObject var workspace = TaskWorkspaceController()
+    @ObservedObject var chat = SessionController()
     var onOpenSettings: () -> Void = {}
     var onOpenDeck: (UUID) -> Void = { _ in }
     @State private var query = ""
@@ -28,6 +29,8 @@ struct MainWorkbenchView: View {
     @State private var childDrafts: [UUID: String] = [:]
     @State private var showingConnection = false
     @State private var showingAddMenu = false
+    @State private var showingHistoryDiagnostics = false
+    @State private var draftRevisions: [WorkbenchRoute: Int] = [:]
     @State private var renameDrafts: [UUID: String] = [:]
     @State private var tasksExpanded = true
     @State private var chatsExpanded = true
@@ -43,6 +46,51 @@ struct MainWorkbenchView: View {
     private var selectedChat: LocalConversation? {
         guard case .chat(let id) = navigation.route else { return nil }
         return state.conversations.first { $0.id == id }
+    }
+    private var chatScope: SessionScope? {
+        switch navigation.route {
+        case .chat(let id): return .localChat(id)
+        case .task(let id): return .localTask(id)
+        case .project(let id, let taskID): return .project(projectID: id, taskID: taskID)
+        default: return nil
+        }
+    }
+    private var activeConversation: Session? {
+        chatScope.flatMap { chat.session(for: $0) }
+    }
+    private struct RecentChatEntry: Identifiable {
+        let id: UUID
+        let title: String
+        let updatedAt: Date
+    }
+    private var recentChats: [RecentChatEntry] {
+        var entries: [UUID: RecentChatEntry] = [:]
+        for local in state.conversations {
+            entries[local.id] = RecentChatEntry(id: local.id,
+                title: local.draft.isEmpty ? local.title : String(local.draft.prefix(20)), updatedAt: local.createdAt)
+        }
+        for record in chat.sessions {
+            if case .localChat(let id) = record.scope {
+                entries[id] = RecentChatEntry(id: id, title: record.title, updatedAt: record.updatedAt)
+            }
+        }
+        return entries.values.sorted { $0.updatedAt == $1.updatedAt ? $0.id.uuidString < $1.id.uuidString : $0.updatedAt > $1.updatedAt }
+    }
+    private var matchingChats: [RecentChatEntry] {
+        recentChats.filter { entry in
+            query.isEmpty || entry.title.localizedCaseInsensitiveContains(query) ||
+            state.conversationDraft(for: .chat(entry.id)).localizedCaseInsensitiveContains(query) ||
+            chat.session(for: .localChat(entry.id))?.messages.contains(where: { $0.text.localizedCaseInsensitiveContains(query) }) == true
+        }
+    }
+    private var hasWritableDraft: Bool {
+        switch navigation.route {
+        case .newChat: return state.dataAvailable
+        case .chat(let id): return state.dataAvailable && state.conversations.contains { $0.id == id }
+        case .task(let id): return state.dataAvailable && state.tasks.contains { $0.id == id }
+        case .project: return projectConversations.isLoaded
+        default: return false
+        }
     }
     private var projectID: String? {
         if case .project(let id, _) = navigation.route { return id }
@@ -79,18 +127,25 @@ struct MainWorkbenchView: View {
             }
             return state.conversationDraft(for: navigation.route)
         }, set: { text in
-            switch navigation.route {
+            let route = navigation.route
+            draftRevisions[route, default: 0] += 1
+            switch route {
             case .newChat:
-                if let id = state.startConversationDraft(text: text) { navigation.route = .chat(id) }
+                if let id = state.startConversationDraft(text: text) {
+                    let chatRoute = WorkbenchRoute.chat(id)
+                    draftRevisions[chatRoute] = draftRevisions[route]
+                    navigation.route = chatRoute
+                }
             case .project(let id, let taskID):
                 _ = projectConversations.saveDraft(projectID: id, taskID: taskID, text: text)
-            default: _ = state.saveConversationDraft(route: navigation.route, text: text)
+            default: _ = state.saveConversationDraft(route: route, text: text)
             }
         })
     }
     private var heading: String {
         if let task = selectedTask { return task.title }
-        if let chat = selectedChat { return chat.title }
+        if case .chat = navigation.route, let activeConversation { return activeConversation.title }
+        if let local = selectedChat { return activeConversation?.title ?? local.title }
         if let task = projectTask { return task.title }
         if let id = projectID { return projects.associations.first { $0.projectID == id }?.name ?? "项目" }
         switch navigation.route {
@@ -112,7 +167,7 @@ struct MainWorkbenchView: View {
                     VStack(spacing: 0) {
                         header(width: geometry.size.width)
                         Divider()
-                        if !state.dataAvailable && projectID == nil {
+                        if !state.dataAvailable && projectID == nil && activeConversation == nil {
                             empty("任务暂时无法读取", detail: state.statusMessage, icon: "exclamationmark.triangle")
                             Button("重新读取") { state.refresh() }.padding()
                         } else {
@@ -192,7 +247,7 @@ struct MainWorkbenchView: View {
                 .background { WorkbenchWindowDragRegion() }
             Divider()
             VStack(spacing: 2) {
-                navButton("新建聊天", icon: "plus", selected: navigation.route == .newChat || selectedChat != nil) {
+                navButton("新建聊天", icon: "plus", selected: isChat) {
                     navigation.openNewChat()
                 }.disabled(!state.dataAvailable).keyboardShortcut("n")
                 navButton("搜索", icon: "magnifyingglass", selected: navigation.route == .search) { navigation.route = .search }
@@ -239,11 +294,11 @@ struct MainWorkbenchView: View {
                         HStack { Text("最近聊天"); Spacer(); Image(systemName: chatsExpanded ? "chevron.up" : "chevron.down") }
                     }.buttonStyle(.plain).font(.caption).foregroundStyle(WorkbenchStyle.muted).padding(.horizontal, 12)
                     if chatsExpanded {
-                        ForEach(state.conversations.reversed()) { chat in
-                            navButton(chat.draft.isEmpty ? chat.title : String(chat.draft.prefix(20)), icon: "bubble.left",
-                                      selected: navigation.route == .chat(chat.id)) { navigation.route = .chat(chat.id) }
+                        ForEach(recentChats) { entry in
+                            navButton(entry.title, icon: "bubble.left",
+                                      selected: navigation.route == .chat(entry.id)) { navigation.route = .chat(entry.id) }
                         }
-                        if state.conversations.isEmpty { Text("从新建聊天记录想法").font(.caption).foregroundStyle(WorkbenchStyle.muted).padding(12) }
+                        if recentChats.isEmpty { Text("从新建聊天记录想法").font(.caption).foregroundStyle(WorkbenchStyle.muted).padding(12) }
                     }
                 }.padding(.horizontal, 12)
             }
@@ -535,15 +590,21 @@ struct MainWorkbenchView: View {
     @ViewBuilder private var center: some View {
         switch navigation.route {
         case .project:
-            projectChatWelcome
+            if let conversation = activeConversation, !conversation.messages.isEmpty {
+                transcript(conversation)
+            } else { projectChatWelcome }
             composer
         case .tasks, .search: taskList
         case .timeline: timeline(taskID: nil)
         case .newChat, .chat:
-            newChatWelcome
+            if let conversation = activeConversation, !conversation.messages.isEmpty {
+                transcript(conversation)
+            } else { newChatWelcome }
             composer
         case .task:
-            ScrollView {
+            if let conversation = activeConversation, !conversation.messages.isEmpty {
+                transcript(conversation)
+            } else { ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
                     if let task = selectedTask {
                         Text(task.completed ? "你已将这个任务标记为完成。记录与材料仍可在右侧查看。" : "任务已建立。分工与进度在右侧，下方可以记录补充要求。")
@@ -565,9 +626,60 @@ struct MainWorkbenchView: View {
                     }
                 }.lineSpacing(6).frame(maxWidth: 760, alignment: .leading).padding(.horizontal, 24).padding(.vertical, 32)
                     .frame(maxWidth: .infinity, alignment: .leading)
-            }
+            } }
             composer
         }
+    }
+
+    private func transcript(_ conversation: Session) -> some View {
+        ChatTranscriptView(conversation: conversation,
+                           isGenerating: chat.isGenerating(scope: conversation.scope),
+                           needsReconciliation: chat.needsReconciliation(scope: conversation.scope),
+                           onReconcile: { Task { await chat.reconcileSession(scope: conversation.scope) } })
+    }
+
+    /// Snapshot the original route and its draft revision before crossing an async boundary.
+    /// A later route selection or an A→B→A edit must not clear somebody else's input.
+    private func sendCurrentDraft() {
+        guard let scope = chatScope else { return }
+        let route = navigation.route
+        let text = draft.wrappedValue
+        let revision = draftRevisions[route, default: 0]
+        guard chat.canSend(scope: scope), let model = chat.selectedModel else { return }
+        let connectionGeneration = chat.connection.generation
+        let providerName = chat.connection.providers.first(where: { $0.providerID == model.providerID })?.name ?? model.providerID
+        let confirmation = NSAlert()
+        confirmation.messageText = "发送给 \(providerName) · \(model.modelID)？"
+        confirmation.informativeText = "这条消息将交给上述模型提供商，并使用该会话中已发送的历史。不会附加项目文件或启动任务。\n\n消息预览：\n\(text.prefix(500))\(text.count > 500 ? "\n（预览已截短，将发送完整输入）" : "")"
+        confirmation.addButton(withTitle: "发送给该模型")
+        confirmation.addButton(withTitle: "取消")
+        guard confirmation.runModal() == .alertFirstButtonReturn,
+              chat.connection.generation == connectionGeneration, chat.selectedModel == model,
+              draftRevisions[route, default: 0] == revision, draftText(for: route) == text,
+              chat.canSend(scope: scope) else { return }
+        Task { @MainActor in
+            guard chat.connection.generation == connectionGeneration, chat.selectedModel == model,
+                  draftRevisions[route, default: 0] == revision, draftText(for: route) == text,
+                  chat.canSend(scope: scope) else { return }
+            let result = await chat.sendMessage(text: text, scope: scope, draftRevision: revision)
+            guard result == .accepted,
+                  draftRevisions[route, default: 0] == revision,
+                  draftText(for: route) == text else { return }
+            draftRevisions[route, default: 0] += 1
+            switch route {
+            case .project(let id, let taskID):
+                _ = projectConversations.saveDraft(projectID: id, taskID: taskID, text: "")
+            case .chat, .task: _ = state.saveConversationDraft(route: route, text: "")
+            default: break
+            }
+        }
+    }
+
+    private func draftText(for route: WorkbenchRoute) -> String {
+        if case .project(let id, let taskID) = route {
+            return projectConversations.draft(projectID: id, taskID: taskID)
+        }
+        return state.conversationDraft(for: route)
     }
 
     private var isChat: Bool {
@@ -635,7 +747,7 @@ struct MainWorkbenchView: View {
     private var draftField: some View {
         TextField(isChat ? "描述一个想法，或你想完成的事…" : "补充要求，或继续讨论…", text: draft, axis: .vertical)
             .lineLimit(1...5).textFieldStyle(.plain).accessibilityLabel("本地对话草稿")
-            .focused($draftFocused).disabled(projectID == nil ? !state.dataAvailable : !projectConversations.isLoaded)
+            .focused($draftFocused).disabled(!hasWritableDraft)
     }
 
     private var composer: some View {
@@ -681,6 +793,43 @@ struct MainWorkbenchView: View {
                     }.buttonStyle(.borderless)
                 }.font(.system(size: 11)).foregroundStyle(WorkbenchStyle.ink)
             }
+            if let error = chat.error {
+                HStack(alignment: .top, spacing: 8) {
+                    Label(error, systemImage: "exclamationmark.triangle").textSelection(.enabled)
+                    if !chat.historyLoaded {
+                        Button("重新读取聊天") { Task { await chat.loadHistory() } }.buttonStyle(.borderless)
+                    }
+                    if chat.hasPendingWrites {
+                        Button("重试保存回复") { Task { await chat.retryPendingWrites() } }.buttonStyle(.borderless)
+                    }
+                }.font(.system(size: 11)).foregroundStyle(WorkbenchStyle.ink)
+            }
+            if activeConversation != nil, !hasWritableDraft {
+                Label("这段聊天的输入草稿未关联，已保存消息仍可浏览。", systemImage: "info.circle")
+                    .font(.system(size: 11)).foregroundStyle(WorkbenchStyle.muted)
+            }
+            if !chat.diagnostics.isEmpty {
+                Button { showingHistoryDiagnostics.toggle() } label: {
+                    Label("有 \(chat.diagnostics.count) 条聊天记录需要核对", systemImage: "exclamationmark.triangle")
+                }.buttonStyle(.plain).font(.system(size: 11))
+                    .popover(isPresented: $showingHistoryDiagnostics) {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("聊天记录诊断").font(.headline)
+                            Text("原文件未覆盖，其余有效记录仍可浏览。")
+                                .font(.caption).foregroundStyle(WorkbenchStyle.muted)
+                            ScrollView {
+                                VStack(alignment: .leading, spacing: 14) {
+                                    ForEach(Array(chat.diagnostics.enumerated()), id: \.offset) { _, diagnostic in
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text(diagnostic.filename).font(.caption).lineLimit(2)
+                                            Text(diagnostic.reason).font(.caption).foregroundStyle(WorkbenchStyle.muted)
+                                        }.textSelection(.enabled)
+                                    }
+                                }.frame(maxWidth: .infinity, alignment: .leading)
+                            }.frame(maxHeight: 280)
+                        }.padding(20).frame(width: 360)
+                    }
+            }
         }.frame(maxWidth: 760).padding(.horizontal, 20).padding(.bottom, isChat ? 28 : 14)
             .frame(maxWidth: .infinity)
     }
@@ -700,34 +849,104 @@ struct MainWorkbenchView: View {
     }
 
     private var composerExecutionControls: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 10) {
             Button { showingConnection.toggle() } label: {
                 HStack(spacing: 6) {
-                    Text("连接 Agent").font(.system(size: 12)).fixedSize()
-                    Image(systemName: "chevron.down").font(.system(size: 9))
+                    Text(connectionLabel).font(.system(size: 12)).fixedSize()
+                    if chat.connection.providers.isEmpty { Image(systemName: "chevron.down").font(.system(size: 9)) }
                 }.frame(height: 36)
-            }.buttonStyle(.plain).accessibilityLabel("Agent 连接状态，尚未接入")
+            }.buttonStyle(.plain).accessibilityLabel("OpenCode 连接设置，\(connectionLabel)")
                 .popover(isPresented: $showingConnection) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("对话执行配置").font(.headline)
-                        Text("尚未接入 Agent。模型与思考强度不可选，草稿不会外发。")
-                        Text("子任务的执行者将在右侧「分工」中管理。")
-                            .foregroundStyle(.secondary)
-                    }.padding(20).frame(width: 290)
+                    VStack(alignment: .leading, spacing: 0) {
+                        ChatConnectionView(connection: chat.connection)
+                        if chat.selectedModel != nil {
+                            Divider()
+                            Toggle("允许将我明确发送的消息交给所选提供商", isOn: $chat.externalSendingAllowed)
+                                .font(.caption).padding(20).frame(width: 390)
+                                .disabled(!chat.connection.canSend)
+                        }
+                    }
                 }
-            Button {} label: {
-                Image(systemName: "arrow.up").font(.system(size: 17, weight: .medium))
+            if !chat.connection.providers.isEmpty { composerModelMenu }
+            Button {
+                if let scope = chatScope, chat.isGenerating(scope: scope) {
+                    Task { await chat.stopGeneration(scope: scope) }
+                } else { sendCurrentDraft() }
+            } label: {
+                Image(systemName: activeGeneration ? "stop.fill" : "arrow.up").font(.system(size: activeGeneration ? 12 : 17, weight: .medium))
                     .foregroundStyle(WorkbenchStyle.surface).frame(width: 36, height: 36)
-                    .background(WorkbenchStyle.muted, in: Circle())
-            }.buttonStyle(.plain).disabled(true)
-                .accessibilityLabel("发送不可用，尚未连接 AI").help("尚未连接 AI，不能发送")
+                    .background(activeGeneration || canSendDraft ? WorkbenchStyle.ink : WorkbenchStyle.muted, in: Circle())
+            }.buttonStyle(.plain).disabled(!activeGeneration && !canSendDraft)
+                .accessibilityLabel(activeGeneration ? "停止回复" : "发送消息")
+                .help(activeGeneration ? "请求停止，等待服务确认" : canSendDraft ? "确认提供商和消息后发送" : "请连接可聊天的服务、选择模型并明确允许外发")
         }
+    }
+
+    private var activeGeneration: Bool {
+        chatScope.map { chat.isGenerating(scope: $0) } ?? false
+    }
+
+    private var canSendDraft: Bool {
+        guard let scope = chatScope, hasWritableDraft else { return false }
+        return chat.canSend(scope: scope) && !draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var connectionLabel: String {
+        switch chat.connection.status {
+        case .disconnected: return "连接 Agent"
+        case .connecting: return "连接中…"
+        case .failed: return "连接失败"
+        case .connected: return chat.connection.canSend ? "OpenCode" : "OpenCode · 仅诊断"
+        }
+    }
+
+    private var composerModelMenu: some View {
+        Menu {
+            ForEach(chat.connection.providers) { provider in
+                Section(provider.name) {
+                    ForEach(provider.models) { model in
+                        Button {
+                            chat.selectedModel = ModelSelection(providerID: provider.providerID, modelID: model.modelID)
+                        } label: {
+                            if chat.selectedModel?.providerID == provider.providerID && chat.selectedModel?.modelID == model.modelID {
+                                Label(model.name, systemImage: "checkmark")
+                            } else { Text(model.name) }
+                        }
+                    }
+                }
+            }
+            if let selection = chat.selectedModel,
+               let descriptor = chat.connection.providers.first(where: { $0.providerID == selection.providerID })?
+                .models.first(where: { $0.modelID == selection.modelID }), !descriptor.variants.isEmpty {
+                Section("思考强度") {
+                    Button("默认") {
+                        chat.selectedModel = ModelSelection(providerID: selection.providerID, modelID: selection.modelID)
+                    }
+                    ForEach(descriptor.variants, id: \.self) { variant in
+                        Button(variant) {
+                            chat.selectedModel = ModelSelection(providerID: selection.providerID, modelID: selection.modelID, variant: variant)
+                        }
+                    }
+                }
+            }
+        } label: {
+            Text(selectedModelLabel).font(.system(size: 12)).lineLimit(1)
+                .frame(maxWidth: 190).frame(height: 36)
+        }.menuStyle(.borderlessButton).fixedSize(horizontal: false, vertical: true)
+            .accessibilityLabel("选择聊天模型和思考强度")
+    }
+
+    private var selectedModelLabel: String {
+        guard let selection = chat.selectedModel else { return "选择模型" }
+        let name = chat.connection.providers.first(where: { $0.providerID == selection.providerID })?
+            .models.first(where: { $0.modelID == selection.modelID })?.name ?? selection.modelID
+        return selection.variant.map { "\(name) · \($0)" } ?? name
     }
 
     private var taskList: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                TextField("搜索任务或聊天草稿", text: $query).textFieldStyle(.roundedBorder)
+                TextField("搜索任务或聊天", text: $query).textFieldStyle(.roundedBorder)
                 Button("新建任务") { addingTask = true }.disabled(!state.dataAvailable || state.isEditingTask)
             }
             Text("\(projects.associations.count) 个项目 · \(state.tasks.count) 个本地任务")
@@ -761,16 +980,16 @@ struct MainWorkbenchView: View {
                         }.buttonStyle(.plain)
                     }
                     if navigation.route == .search {
-                        ForEach(state.conversations.filter { query.isEmpty || $0.draft.localizedCaseInsensitiveContains(query) }) { chat in
-                            Button { navigation.route = .chat(chat.id) } label: {
-                                Label(chat.draft.isEmpty ? chat.title : String(chat.draft.prefix(60)), systemImage: "bubble.left")
+                        ForEach(matchingChats) { entry in
+                            Button { navigation.route = .chat(entry.id) } label: {
+                                Label(entry.title, systemImage: "bubble.left")
                                     .padding(12)
                             }.buttonStyle(.plain)
                         }
                     }
                     if state.tasks.isEmpty && projects.associations.isEmpty && navigation.route != .search { empty("还没有任务", detail: "打开项目文件夹，或创建本地任务。", icon: "checklist") }
                     else if !query.isEmpty && !state.tasks.contains(where: { $0.title.localizedCaseInsensitiveContains(query) }) {
-                        if !projects.snapshots.values.contains(where: { $0.tasks.contains(where: { $0.title.localizedCaseInsensitiveContains(query) || $0.goal.localizedCaseInsensitiveContains(query) }) }) && (navigation.route != .search || !state.conversations.contains(where: { $0.draft.localizedCaseInsensitiveContains(query) })) {
+                        if !projects.snapshots.values.contains(where: { $0.tasks.contains(where: { $0.title.localizedCaseInsensitiveContains(query) || $0.goal.localizedCaseInsensitiveContains(query) }) }) && (navigation.route != .search || matchingChats.isEmpty) {
                             Text("没有匹配的结果").foregroundStyle(WorkbenchStyle.muted).padding()
                         }
                     }

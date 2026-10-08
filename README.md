@@ -22,6 +22,7 @@
 - 读取错误不冒充空列表，保存失败不伪报成功；中断会话重启后保持停止。
 - 显式关联项目并只读查看任务与执行记录；五字段 v2 身份留在项目，私人历史按 project_id 存于用户数据区，旧项目需明确迁移。
 - 用户偏好使用 TOML；设置中可查看项目配置声明，并确认将旧本机数据复制到 `~/.screendeck`，保留旧目录。
+- OpenCode 固定版本健康检查、独立聊天历史与发送/停止/核对控制已建立；真实聊天暂未开放，须先完成受控启动隔离，不能仅凭“工具权限 deny”放行。
 
 这不是 Screenpipe 的完整替代品：没有连续视频回放、音频转写、跨设备同步、通用桌面自动化或自动任务完成判定。
 
@@ -74,6 +75,12 @@ zsh scripts/package-local.sh
 
 ## 数据与隐私
 
+### OpenCode 接入边界
+
+输入栏右侧可明确连接带认证的 HTTP 回环服务，只接受 `127.0.0.1` / `[::1]` 与显式端口。当前核验 OpenCode **1.18.35**；只查询健康及版本，不自动安装、启动服务或更改其它 Agent 的配置。模型目录、会话查询、发送、停止均未开放：实例查询本身也可能初始化配置与插件，必须先有 ScreenDeck 受控启动的隔离证据。
+
+聊天模型、JSON 存储、真实消息视图和生命周期控制已经实现，发送闭环使用临时数据与 fake runtime 验证，**不是实机模型已接通**。未来开放后仍需明确选择提供商/模型及确认外发，项目文件、AGENTLOG、截图不会自动附加。未知提交不自动重发；取消接收不等于停止外部生成。
+
 设置页可查看数据目录：
 
 | 内容 | 新安装 / 确认迁移后的 `~/.screendeck` 位置 |
@@ -81,9 +88,16 @@ zsh scripts/package-local.sh
 | 用户偏好 | config.toml：默认固定展开、屏幕选择、采样间隔、本地摘要模型 |
 | 本机任务、子任务、当前选择、接续卡、独立草稿 | tasks/local-workspace.json，保留兼容聚合格式 |
 | 项目位置 / 浏览选择、项目内未发送草稿 | projects.json、conversations/project-drafts.json |
+| 新增独立对话历史 | sessions/YYYY/MM/DD/<session_id>.json：Session / Turn / Message / RuntimeSessionBinding |
 | 会话、OCR、截图 | artifacts/WorkSessions/会话 UUID/ |
 
 已有旧数据时仍使用 `~/Library/Application Support/ScreenDeck`。在「设置 → 数据与隐私」确认迁移后，应用校验并复制旧记录、将偏好转换为 TOML，最后发布切换凭据；冲突或失败不覆盖旧数据，旧目录原件保留。迁移后不要运行旧版本继续写旧目录，否则两边可能分叉。
+
+新聊天历史没有 Application Support 对应文件，通过 `ScreenDeckPaths.sessionHistory` 存在 `~/.screendeck/sessions/`，不随旧 workspace 迁移切换或双写。如果发现此前的 `conversations/history` 或 `sessions/history` 目录（包括空目录），聊天读写暂停并提示待迁移；不会自动移动、合并或选择其中一套历史，自动迁移尚未实现。旧聊天草稿、本机任务和屏幕记录仍保持原活动位置；`conversations/project-drafts.json` 是未发送草稿的兼容位置，不在此次更名范围。聊天历史每文件最多 16 MiB、1,000 轮/2,000 条消息，单条保存上限 1 MiB；超限拒绝，不自动裁剪。文件未加密，不随 Git 同步，不自动删除；密码仅连接内存持有，不写历史或日志。
+
+核心类型统一为 `Session`、`Turn`、`Message`；外部会话使用 `RuntimeSession`，通过 `RuntimeSessionBinding` 关联。目录更名不升级记录格式：Swift 的 `sessionID` 仍编码为 v1 的 `conversation_id`，文件名仍为小写 UUID。
+
+会话已按 UTC 创建日期归档到 `sessions/YYYY/MM/DD/<session_id>.json`，跨天续聊仍写同一文件，创建时间不可更改；工作台按最近更新时间排序。按 ID 从有界、只读日期扫描重建内存索引，并核对正文身份；重复 ID 不选取其中一份，扫描异常不能当作空历史。全库最多 1,000 个 JSON、4,096 个目录及 8,192 个条目，保存预留新增目录、锁和临时文件容量。不会自动迁移已有历史。具体规则见本机存在时的 [配置与项目管理](docs/architecture/configuration-and-project-management.md)。
 
 项目目录中的 `.screendeck/project.json` 与可选 config.toml 保存共享身份和约定，不保存账户、密钥或私人聊天。私人项目历史在 `~/.screendeck/projects/<project_id>/` 的 tasks/runs/artifacts，history.json 绑定实际项目位置；旧 v1 项目在显式迁移前仍按原位置读取。迁移保留原件备份，正式 docs 不搬走。配置声明不执行命令，也不表示已经连接 coding Agent。
 
@@ -108,7 +122,7 @@ node scripts/validate-project-workspace.mjs --root /绝对项目路径
 - 会话移到废纸篓后可以从废纸篓恢复；已保存接续卡仍含原摘要，需另行修正。恢复目录后需重启应用重新读取。
 - 原子写入不等于备份、加密或绝对断电安全。旧数据可读取，损坏数据不会被静默重置。
 
-默认无网络请求。仅用户确认本机 AI 操作时调用回环服务；打开材料链接是用户发起的浏览器行为。
+默认无网络请求。用户明确连接 OpenCode 时仅查询回环服务健康；确认本机 AI 整理时调用本地模型服务；打开材料链接是用户发起的浏览器行为。
 
 ## 验证与代码结构
 
@@ -138,6 +152,7 @@ Sources/ScreenDeck/
 └── Services/
     ├── Capture/          ScreenCaptureKit 与 Vision
     ├── Configuration/    TOML 白名单、来源校验与保存
+    ├── AgentRuntime/     固定 OpenCode 协议、显式连接、聊天轮次控制
     ├── Storage/          私人位置解析、安全持久化与显式迁移
     └── Obsidian/         历史适配代码，当前未接入
 ```

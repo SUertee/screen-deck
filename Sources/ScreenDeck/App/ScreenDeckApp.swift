@@ -32,6 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var workbenchNavigation = WorkbenchNavigation()
     private var projects = ProjectWorkspaceController()
     private var projectConversations = ProjectConversationController()
+    private var chat = SessionController()
     private var memory: WorkSessionController?
     private var sleepObservers: [NSObjectProtocol] = []
 
@@ -60,6 +61,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             requireExistingFile: migratedFiles.contains("projects.json")))
         projectConversations = ProjectConversationController(store: ProjectConversationStore(url: paths.projectConversations(in: location),
             requireExistingFile: migratedFiles.contains("conversations/project-drafts.json")))
+        chat = SessionController(store: SessionHistoryStore(root: paths.sessionHistory,
+            previousRoots: paths.previousSessionHistoryRoots))
         let state = AppState(store: LocalWorkspaceStore(url: paths.workspace(in: location),
             requireExistingFile: migratedFiles.contains("tasks/local-workspace.json")), configurationStore: configuration)
         self.state = state
@@ -82,6 +85,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         showWorkbench()
         let launchRevision = workbenchNavigation.routingRevision
         Task { @MainActor in await projectConversations.load() }
+        Task { @MainActor in await chat.loadHistory() }
         Task { @MainActor in
             guard await projects.load() else { return }
             // Explicit local launch request uses the same validated association path as the picker.
@@ -119,6 +123,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             window.contentView = NSHostingView(rootView: MainWorkbenchView(
                 state: state, memory: memory, navigation: workbenchNavigation, projects: projects,
                 projectConversations: projectConversations,
+                chat: chat,
                 onOpenSettings: { [weak self] in self?.showSettings() },
                 onOpenDeck: { [weak self] id in self?.showTaskInDeck(id) })
                 .ignoresSafeArea(.container, edges: .top))
@@ -182,6 +187,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
               state.dataAvailable, memory.loaded, memory.preferencesLoaded,
               !state.isEditingTask, !state.hasUnsavedConversationDrafts,
               !projectConversations.hasUnsavedDrafts, projectConversations.isLoaded,
+              !chat.hasActiveTurn, !chat.hasPendingWrites,
               !projects.isLoading, memory.activeID == nil, !memory.capturing,
               settingsPresentation.draft?.isDirty != true else {
             let alert = NSAlert(); alert.messageText = "暂时不能迁移"
@@ -200,6 +206,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             guard alert.runModal() == .alertFirstButtonReturn else { return }
             // A modal alert runs a nested event loop; recheck before touching files.
             guard !state.isEditingTask, !state.hasUnsavedConversationDrafts,
+                  !chat.hasActiveTurn, !chat.hasPendingWrites,
                   !projectConversations.hasUnsavedDrafts, !projects.isLoading,
                   memory.activeID == nil, !memory.capturing,
                   settingsPresentation.draft?.isDirty != true else { return }
@@ -218,6 +225,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             workbenchNavigation = WorkbenchNavigation()
             projects = ProjectWorkspaceController()
             projectConversations = ProjectConversationController()
+            chat.shutdown()
             self.state = nil; self.memory = nil
             configureWorkbench()
         } catch { showStorageError(error) }
@@ -244,6 +252,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard settingsPresentation.confirmUnsavedChanges() else { return .terminateCancel }
+        if chat.hasPendingWrites {
+            let alert = NSAlert()
+            alert.messageText = "回复尚未保存"
+            alert.informativeText = "请返回工作台重试保存回复，再退出。不会自动重发消息或丢弃内存中的回复。"
+            alert.addButton(withTitle: "返回工作台"); alert.runModal(); showWorkbench()
+            return .terminateCancel
+        }
+        if chat.hasActiveTurn {
+            let alert = NSAlert()
+            alert.messageText = "回复还未结束"
+            alert.informativeText = "退出不会证明服务已经停止。已保存的会话下次需手动核对，不会自动重发；要停止回复，请先在工作台点击停止。"
+            alert.addButton(withTitle: "继续等待"); alert.addButton(withTitle: "保留记录并退出")
+            guard alert.runModal() == .alertSecondButtonReturn, !chat.hasPendingWrites else { return .terminateCancel }
+        }
         var discardConversationDrafts = false
         var discardProjectDrafts = false
         if let state, state.hasUnsavedConversationDrafts, !retryLocalConversationDrafts() {
@@ -280,6 +302,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         if discardConversationDrafts { state?.discardUnsavedConversationDrafts() }
         if discardProjectDrafts { projectConversations.discardUnsavedDrafts() }
+        guard !chat.hasPendingWrites else { return .terminateCancel }
+        chat.shutdown()
         _ = memory?.pause()
         return .terminateNow
     }

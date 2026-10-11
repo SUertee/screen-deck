@@ -2,13 +2,13 @@
 config_version = 1
 
 [workspace]
-editable_roots = ["Sources", "Tests"]
-protected_paths = [".git", ".screendeck/project.json"]
-ignored_paths = [".build", ".swiftpm"]
+editable_roots = ["desktop", "scripts", "Resources/Schemas"]
+protected_paths = [".git", ".screendeck/project.json", "archive"]
+ignored_paths = ["archive", "desktop/node_modules", "desktop/dist", "desktop/dist-release", "desktop/artifacts"]
 
 [validation]
-test_argv = ["swift", "test"]
-build_argv = ["swift", "build", "-c", "release"]
+test_argv = ["npm", "--prefix", "desktop", "test"]
+build_argv = ["npm", "--prefix", "desktop", "run", "build"]
 
 [documentation]
 directory = "docs"

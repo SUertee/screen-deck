@@ -11,4 +11,5 @@
 - 本机如有 docs/architecture/development-workflow.md 和 docs/roadmap/development-plan.md，可参考工作流与路线；docs 不随 Git 克隆，缺失时按用户要求、实际代码与 Git 状态确定工作范围，不补造路线或历史。已登记任务的唯一状态源是 ~/.screendeck/projects/<project_id>/tasks；先读项目 .screendeck/README.md 和 project.json，再按稳定 ID 查看对应 task/run。路线只引用，AGENTLOG 只留摘要和执行历史，不复制完整任务看板；不新增 progress 副本。goal 草案不是启动授权。
 - 项目内 .screendeck 只留五字段 v2 身份、TOML 约定及简短说明。私人项目历史按 project_id 分目录保存，history.json 绑定实际项目根；task/run 仍用 v1 契约，由单一维护者串行维护并运行 node scripts/validate-project-workspace.mjs。读取只读，不启动执行；迁移必须显式确认、完整备份、核验引用并保留回退依据，不双写。共享 schema 在 Resources/Schemas。旧 Application Support 本机任务/采集数据是另一项设置迁移，不能与项目历史迁移混同。TOML 不授予权限；并发任务写入、自动导出和 JEV/CLI/API 仍未实现，P2 产物整理不阻塞基础记录。
 - 每次选一个明确工作包，先核对依赖与现状，再实现、验证、自查、更新日志；设计完成不等于功能完成。不修改全局 Agent 配置、账户或密钥来绕过缺失能力。
-- 代码阶段按风险运行 swift test、swift build -c release；文档阶段检查引用和 git diff --check。记录实际命令、结果及未验证项，不把旧测试当本轮验证。
+- desktop/ 是 React + Electron + TypeScript 主开发入口；旧 Swift 工程冻结在 archive/swift-prototype/，不默认扫描、修改或运行。根 Resources/Schemas 和只读记录校验器保留。新版预览只写 ~/.screendeck/previews/electron-v1，不自动迁移或与 Swift 双写。原项目 task/run 保持只读，预览计划不能冒充原任务状态或执行授权。
+- 在 desktop/ 按风险运行 npm run typecheck、npm test、npm run build 与隔离 npm run smoke；真实调用需明确授权，仅使用本次输入和已完成的本会话消息。只有显式修改归档 Swift 时才在 archive/swift-prototype/ 按范围运行测试和构建，历史缓存不是验证依据；文档检查引用和 git diff --check。记录实际命令、结果及未验证项，不把旧测试当本轮验证。

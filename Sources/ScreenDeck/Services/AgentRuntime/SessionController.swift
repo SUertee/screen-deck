@@ -18,6 +18,7 @@ final class SessionController: ObservableObject {
     private var operations: Set<UUID> = []
     private var sendingScopes: Set<SessionScope> = []
     private var streams: [UUID: Task<Void, Never>] = [:]
+    private var subscriptions: [UUID: Task<AsyncThrowingStream<RuntimeStreamEvent, Error>, Error>] = [:]
     private var refreshRequested: Set<UUID> = []
     private var disconnectedStreams: Set<UUID> = []
     private var safetyFailures: Set<UUID> = []
@@ -26,6 +27,7 @@ final class SessionController: ObservableObject {
     private var stopBeforeSubmission: Set<SessionScope> = []
     private var pendingWrites: [UUID: Session] = [:]
     private var loading = false
+    private var isShutdown = false
     var hasPendingWrites: Bool { !pendingWrites.isEmpty }
     var hasActiveTurn: Bool { !operations.isEmpty || !streams.isEmpty || !sendingScopes.isEmpty || !stopRequests.isEmpty }
 
@@ -54,7 +56,7 @@ final class SessionController: ObservableObject {
         return pendingWrites[record.id] != nil || record.turns.contains { [.prepared, .submitting, .unknown, .cancelling].contains($0.state) }
     }
     func canSend(scope: SessionScope) -> Bool {
-        historyLoaded && !loading && store != nil && connection.canSend && externalSendingAllowed && modelIsAvailable &&
+        !isShutdown && historyLoaded && !loading && store != nil && connection.canSend && externalSendingAllowed && modelIsAvailable &&
         !blockedScopes.contains(scope) &&
         !isGenerating(scope: scope) && !needsReconciliation(scope: scope) && !hasPendingWrites &&
         session(for: scope)?.turns.contains(where: { $0.state == .streaming }) != true
@@ -132,7 +134,7 @@ final class SessionController: ObservableObject {
         record.messages.append(Message(turnID: turn.id, role: .user, text: text))
         record.updatedAt = Date()
         guard await persist(record, beforeSubmission: true) else { return .notSubmitted }
-        if stopBeforeSubmission.remove(scope) != nil || stopRequests.remove(id) != nil {
+        if isShutdown || Task.isCancelled || stopBeforeSubmission.remove(scope) != nil || stopRequests.remove(id) != nil {
             await cancelBeforeSubmission(id, turnID: turn.id)
             return .notSubmitted
         }
@@ -159,19 +161,43 @@ final class SessionController: ObservableObject {
             return .notSubmitted
         }
         guard let binding = current(id)?.binding else { return .notSubmitted }
-        if stopRequests.remove(id) != nil {
+        if isShutdown || Task.isCancelled || stopRequests.remove(id) != nil {
+            await cancelBeforeSubmission(id, turnID: turn.id)
+            return .notSubmitted
+        }
+        do {
+            try await startStream(id, binding: binding, client: client)
+        } catch {
+            if isShutdown || Task.isCancelled || stopRequests.remove(id) != nil {
+                await cancelBeforeSubmission(id, turnID: turn.id)
+            } else {
+                await setState(id, turnID: turn.id, state: .failed, failure: Self.runtimeDiagnostic(error))
+            }
+            return .notSubmitted
+        }
+        if isShutdown || Task.isCancelled || stopRequests.remove(id) != nil {
+            cancelStream(id)
             await cancelBeforeSubmission(id, turnID: turn.id)
             return .notSubmitted
         }
         record = current(id)!
         record.turns[record.turns.count - 1].state = .submitting
         if let index = record.messages.firstIndex(where: { $0.turnID == turn.id && $0.role == .user }) { record.messages[index].externalMessageID = externalID }
-        guard await persist(record, beforeSubmission: true) else { return .notSubmitted }
-        if stopRequests.remove(id) != nil {
+        guard await persist(record, beforeSubmission: true) else { cancelStream(id); return .notSubmitted }
+        if isShutdown || Task.isCancelled || stopRequests.remove(id) != nil {
+            cancelStream(id)
             await cancelBeforeSubmission(id, turnID: turn.id)
             return .notSubmitted
         }
-        startStream(id, binding: binding, client: client)
+        guard !isShutdown, !safetyFailures.contains(id), !disconnectedStreams.contains(id),
+              let stream = streams[id], !stream.isCancelled, !Task.isCancelled else {
+            cancelStream(id); refreshRequested.remove(id)
+            let failure = safetyFailures.contains(id)
+                ? "发送前检测到非聊天能力，未提交本轮请求。"
+                : "发送前事件通道已关闭，未提交本轮请求。"
+            await finishBeforeSubmission(id, turnID: turn.id, state: .failed, failure: failure)
+            return .notSubmitted
+        }
         do {
             let receipt = try await client.sendMessage(sessionID: binding.externalSessionID,
                 clientRequestID: turn.clientRequestID.uuidString, text: text, model: model)
@@ -200,17 +226,28 @@ final class SessionController: ObservableObject {
     }
 
     func reconcileSession(scope: SessionScope) async {
+        guard !isShutdown else { return }
         guard !blockedScopes.contains(scope) else { error = "该会话关联有冲突，不能自动核对或合并。"; return }
         guard let record = session(for: scope), let client = connection.client, !operations.contains(record.id) else { return }
         guard pendingWrites[record.id] == nil else { error = "请先重试保存，避免覆盖尚未落盘的回复。"; return }
         operations.insert(record.id); defer { finishOperation(record.id) }
+        // Only explicit reconciliation may re-establish a disconnected subscription.
+        // Canonical history/status must still verify the original submitted message.
+        disconnectedStreams.remove(record.id)
         do {
             try await refresh(record.id, client: client, allowRebind: true)
             if let updated = current(record.id), updated.turns.last?.state == .streaming, let binding = updated.binding {
-                startStream(record.id, binding: binding, client: client)
+                try await startStream(record.id, binding: binding, client: client)
             }
             error = nil
-        } catch { self.error = Self.runtimeDiagnostic(error) }
+        } catch {
+            let diagnostic = Self.runtimeDiagnostic(error)
+            if let turn = current(record.id)?.turns.last, turn.state == .streaming {
+                cancelStream(record.id)
+                await setState(record.id, turnID: turn.id, state: .unknown, failure: diagnostic)
+            }
+            self.error = diagnostic
+        }
     }
 
     func stopGeneration(scope: SessionScope) async {
@@ -218,7 +255,11 @@ final class SessionController: ObservableObject {
             stopBeforeSubmission.insert(scope); error = "准备发送已取消，将保留输入。"; return
         }
         if let record = session(for: scope), operations.contains(record.id), isGenerating(scope: scope) {
-            stopRequests.insert(record.id); error = "停止已排队；提交结果核对后会请求服务停止。"; return
+            stopRequests.insert(record.id)
+            if let subscription = subscriptions[record.id] {
+                subscription.cancel(); error = "准备发送已取消，将保留输入。"
+            } else { error = "停止已排队；提交结果核对后会请求服务停止。" }
+            return
         }
         guard let record = session(for: scope), let binding = record.binding, let turn = record.turns.last,
               !Self.isTerminal(turn.state), let client = connection.client, !operations.contains(record.id) else { return }
@@ -248,11 +289,27 @@ final class SessionController: ObservableObject {
     }
 
     /// App exit cancels subscriptions only. It does not pretend an external operation stopped.
-    func shutdown() { for task in streams.values { task.cancel() }; streams.removeAll() }
+    func shutdown() {
+        isShutdown = true
+        for task in subscriptions.values { task.cancel() }
+        for task in streams.values { task.cancel() }
+        streams.removeAll()
+    }
 
-    private func startStream(_ id: UUID, binding: RuntimeSessionBinding, client: any RuntimeClient) {
+    private func startStream(_ id: UUID, binding: RuntimeSessionBinding, client: any ExecutionDriver) async throws {
+        guard !isShutdown else { throw CancellationError() }
         cancelStream(id); disconnectedStreams.remove(id)
-        let events = client.events(sessionID: binding.externalSessionID)
+        let subscription = Task {
+            let events = try await client.events(sessionID: binding.externalSessionID)
+            try Task.checkCancellation()
+            return events
+        }
+        subscriptions[id] = subscription
+        defer { subscriptions.removeValue(forKey: id) }
+        let events = try await withTaskCancellationHandler {
+            try await subscription.value
+        } onCancel: { subscription.cancel() }
+        try Task.checkCancellation()
         streams[id] = Task { [weak self] in
             do {
                 for try await event in events {
@@ -266,7 +323,7 @@ final class SessionController: ObservableObject {
         }
     }
 
-    private func receive(_ event: RuntimeStreamEvent, id: UUID, binding: RuntimeSessionBinding, client: any RuntimeClient) async {
+    private func receive(_ event: RuntimeStreamEvent, id: UUID, binding: RuntimeSessionBinding, client: any ExecutionDriver) async {
         guard current(id)?.binding == binding else { return }
         let sessionID: String
         switch event {
@@ -290,7 +347,7 @@ final class SessionController: ObservableObject {
         refreshRequested.insert(id); scheduleRefresh(id, client: client)
     }
 
-    private func scheduleRefresh(_ id: UUID, client: any RuntimeClient) {
+    private func scheduleRefresh(_ id: UUID, client: any ExecutionDriver) {
         guard !operations.contains(id), refreshRequested.remove(id) != nil else { return }
         operations.insert(id)
         Task { [weak self] in
@@ -306,7 +363,7 @@ final class SessionController: ObservableObject {
         }
     }
 
-    private func refresh(_ id: UUID, client: any RuntimeClient, allowRebind: Bool) async throws {
+    private func refresh(_ id: UUID, client: any ExecutionDriver, allowRebind: Bool) async throws {
         guard var record = current(id), let binding = record.binding, let settings = connection.settings,
               let report = connection.report, binding.endpoint == settings.endpoint, binding.directory == settings.directory,
               binding.compatibleVersion == report.version,
@@ -375,7 +432,7 @@ final class SessionController: ObservableObject {
         if record.turns.last.map({ Self.isTerminal($0.state) || $0.state == .unknown }) == true { cancelStream(id) }
     }
 
-    private func validateRuntimeSession(_ binding: RuntimeSessionBinding, client: any RuntimeClient) async throws {
+    private func validateRuntimeSession(_ binding: RuntimeSessionBinding, client: any ExecutionDriver) async throws {
         guard let settings = connection.settings, let report = connection.report,
               binding.endpoint == settings.endpoint, binding.directory == settings.directory,
               binding.compatibleVersion == report.version else { throw OpenCodeError.invalidDirectory }
@@ -393,8 +450,12 @@ final class SessionController: ObservableObject {
     }
 
     private func cancelBeforeSubmission(_ id: UUID, turnID: UUID) async {
+        await finishBeforeSubmission(id, turnID: turnID, state: .cancelled, failure: "发送前已取消。")
+    }
+
+    private func finishBeforeSubmission(_ id: UUID, turnID: UUID, state: TurnState, failure: String) async {
         guard var record = current(id), let index = record.turns.firstIndex(where: { $0.id == turnID }) else { return }
-        record.turns[index].state = .cancelled; record.turns[index].failure = "发送前已取消。"
+        record.turns[index].state = state; record.turns[index].failure = failure
         record.turns[index].updatedAt = Date(); record.updatedAt = Date()
         for message in record.messages.indices where record.messages[message].turnID == turnID {
             record.messages[message].externalMessageID = nil

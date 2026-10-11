@@ -6,13 +6,13 @@ enum RuntimeConnectionState: Equatable { case disconnected, connecting, connecte
 /// Connecting inspects a local service. It never launches a process or submits a prompt.
 @MainActor
 final class RuntimeConnectionController: ObservableObject {
-    typealias ClientFactory = (OpenCodeConnectionSettings, String) throws -> any RuntimeClient
+    typealias ClientFactory = (OpenCodeConnectionSettings, String) throws -> any ExecutionDriver
     @Published private(set) var status: RuntimeConnectionState = .disconnected
     @Published private(set) var report: RuntimeConnectionReport?
     @Published private(set) var settings: OpenCodeConnectionSettings?
     @Published private(set) var error: String?
     private(set) var generation = UUID()
-    private(set) var client: (any RuntimeClient)?
+    private(set) var client: (any ExecutionDriver)?
     var permitsChange: () -> Bool = { true }
     var onReset: () -> Void = {}
     private let factory: ClientFactory

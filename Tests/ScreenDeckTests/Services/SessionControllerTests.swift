@@ -17,6 +17,48 @@ private actor SessionTestGate {
     }
 }
 
+/// Subscription setup must release its waiter when the owning task is cancelled.
+private actor SessionTestSubscriptionGate {
+    private var opened = false
+    private var continuations: [UUID: CheckedContinuation<Void, Error>] = [:]
+    private(set) var waits = 0
+    private(set) var cancelledWaits = 0
+    var pendingCount: Int { continuations.count }
+
+    func wait() async throws {
+        try Task.checkCancellation()
+        waits += 1
+        guard !opened else { return }
+        let waiterID = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                if Task.isCancelled {
+                    cancelledWaits += 1
+                    continuation.resume(throwing: CancellationError())
+                } else {
+                    continuations[waiterID] = continuation
+                }
+            }
+        } onCancel: {
+            Task { await self.cancel(waiterID) }
+        }
+        try Task.checkCancellation()
+    }
+
+    private func cancel(_ waiterID: UUID) {
+        guard let continuation = continuations.removeValue(forKey: waiterID) else { return }
+        cancelledWaits += 1
+        continuation.resume(throwing: CancellationError())
+    }
+
+    func open() {
+        opened = true
+        let pending = Array(continuations.values)
+        continuations.removeAll()
+        for continuation in pending { continuation.resume() }
+    }
+}
+
 private actor SessionTestStore: SessionHistoryStoring {
     let backing: SessionHistoryStore
     private(set) var listCalls = 0
@@ -45,12 +87,15 @@ private actor SessionTestStore: SessionHistoryStoring {
     }
 }
 
-private final class SessionTestRuntime: RuntimeClient, @unchecked Sendable {
+private final class SessionTestRuntime: ExecutionDriver, @unchecked Sendable {
     struct State {
-        var connectCalls = 0, createCalls = 0, promptCalls = 0, messageCalls = 0, abortCalls = 0, rejectCalls = 0
+        var connectCalls = 0, createCalls = 0, promptCalls = 0, messageCalls = 0, abortCalls = 0, rejectCalls = 0, eventsCalls = 0
         var safe = true, completeReplies = true, failCreateOnce = false, submissionUnknown = false
         var forcedSessionID: String?, returnedDirectory: String?
         var sendGate: SessionTestGate?, queryGate: SessionTestGate?
+        var createGate: SessionTestGate?
+        var subscriptionGate: SessionTestSubscriptionGate?
+        var subscriptionFailure: OpenCodeError?
         var onSend: (@Sendable () async -> Void)?
         var messages: [String: [RuntimeMessage]] = [:]
         var statuses: [String: RuntimeSessionStatus] = [:]
@@ -76,6 +121,7 @@ private final class SessionTestRuntime: RuntimeClient, @unchecked Sendable {
             sessionID = $0.forcedSessionID ?? "ses_fixture_\($0.createCalls)"
             if !shouldFail { $0.messages[sessionID] = $0.messages[sessionID] ?? []; $0.statuses[sessionID] = $0.statuses[sessionID] ?? .idle }
         }
+        if let gate = read({ $0.createGate }) { await gate.wait() }
         if shouldFail { throw OpenCodeError.httpStatus(500) }
         return .init(externalSessionID: sessionID, directory: read { $0.returnedDirectory } ?? Self.directory)
     }
@@ -110,8 +156,13 @@ private final class SessionTestRuntime: RuntimeClient, @unchecked Sendable {
     func status(sessionID: String) async throws -> RuntimeSessionStatus { read { $0.statuses[sessionID] ?? .idle } }
     func abort(sessionID: String) async throws { update { $0.abortCalls += 1; $0.statuses[sessionID] = .idle } }
     func rejectPermission(sessionID: String, requestID: String) async throws { update { $0.rejectCalls += 1 } }
-    func events(sessionID: String) -> AsyncThrowingStream<RuntimeStreamEvent, Error> {
-        AsyncThrowingStream { continuation in update { $0.continuations[sessionID] = continuation } }
+    func events(sessionID: String) async throws -> AsyncThrowingStream<RuntimeStreamEvent, Error> {
+        update { $0.eventsCalls += 1 }
+        try Task.checkCancellation()
+        if let gate = read({ $0.subscriptionGate }) { try await gate.wait() }
+        try Task.checkCancellation()
+        if let failure = read({ $0.subscriptionFailure }) { throw failure }
+        return AsyncThrowingStream { continuation in update { $0.continuations[sessionID] = continuation } }
     }
     func emit(_ event: RuntimeStreamEvent, sessionID: String) { read { $0.continuations[sessionID] }?.yield(event) }
     func closeStream(sessionID: String) { read { $0.continuations[sessionID] }?.finish(throwing: OpenCodeError.streamClosed) }
@@ -189,6 +240,75 @@ final class SessionControllerTests: XCTestCase {
         XCTAssertEqual(f.runtime.read { $0.createCalls }, 0)
         XCTAssertEqual(f.runtime.read { $0.promptCalls }, 0)
         XCTAssertTrue(f.controller.sessions.isEmpty)
+    }
+
+    @MainActor func testPromptWaitsForEventSubscriptionReadiness() async throws {
+        let f = try await fixture(); defer { f.controller.shutdown() }
+        let gate = SessionTestSubscriptionGate()
+        f.runtime.update { $0.subscriptionGate = gate }
+        let operation = Task { await self.send(f) }
+        addTeardownBlock {
+            operation.cancel()
+            await gate.open()
+            _ = await operation.value
+        }
+        await eventually("event subscription waiting for readiness") { await gate.waits == 1 }
+        XCTAssertEqual(f.runtime.read { $0.eventsCalls }, 1)
+        XCTAssertEqual(f.runtime.read { $0.promptCalls }, 0)
+        XCTAssertTrue(f.runtime.read { $0.continuations.isEmpty })
+        XCTAssertEqual(f.controller.session(for: f.scope)?.turns.last?.state, .prepared)
+        XCTAssertNil(f.controller.session(for: f.scope)?.messages.first?.externalMessageID)
+
+        await gate.open()
+        let result = await operation.value
+        XCTAssertEqual(result, .accepted)
+        XCTAssertEqual(f.runtime.read { $0.promptCalls }, 1)
+        XCTAssertEqual(f.controller.session(for: f.scope)?.turns.last?.state, .finished)
+        let pendingCount = await gate.pendingCount
+        XCTAssertEqual(pendingCount, 0)
+    }
+
+    @MainActor func testEventSubscriptionFailureDoesNotReserveSubmissionIdentityOrSubmit() async throws {
+        let f = try await fixture(); defer { f.controller.shutdown() }
+        f.runtime.update { $0.subscriptionFailure = .httpStatus(503) }
+        let result = await send(f)
+        XCTAssertEqual(result, .notSubmitted)
+        XCTAssertEqual(f.runtime.read { $0.eventsCalls }, 1)
+        XCTAssertEqual(f.runtime.read { $0.promptCalls }, 0)
+        XCTAssertTrue(f.runtime.read { $0.continuations.isEmpty })
+        XCTAssertEqual(f.controller.session(for: f.scope)?.turns.last?.state, .failed)
+        XCTAssertNil(f.controller.session(for: f.scope)?.messages.first?.externalMessageID)
+        let saved = try await f.store.backing.list().records
+        XCTAssertEqual(saved.first?.turns.last?.state, .failed)
+        XCTAssertNil(saved.first?.messages.first?.externalMessageID)
+    }
+
+    @MainActor func testStopDuringEventSubscriptionCancelsBeforePrompt() async throws {
+        let f = try await fixture(); defer { f.controller.shutdown() }
+        let gate = SessionTestSubscriptionGate()
+        f.runtime.update { $0.subscriptionGate = gate }
+        let operation = Task { await self.send(f) }
+        addTeardownBlock {
+            operation.cancel()
+            await gate.open()
+            _ = await operation.value
+        }
+        await eventually("event subscription suspended before stop") { await gate.waits == 1 }
+        XCTAssertEqual(f.runtime.read { $0.promptCalls }, 0)
+        await f.controller.stopGeneration(scope: f.scope)
+        await eventually("pending event subscription cancelled") { await gate.cancelledWaits == 1 }
+        let pendingCount = await gate.pendingCount
+        XCTAssertEqual(pendingCount, 0)
+        XCTAssertTrue(f.runtime.read { $0.continuations.isEmpty })
+
+        // Release a broken implementation after recording the cancellation failure, so the test cannot hang.
+        await gate.open()
+        let result = await operation.value
+        XCTAssertEqual(result, .notSubmitted)
+        XCTAssertEqual(f.runtime.read { $0.promptCalls }, 0)
+        XCTAssertEqual(f.runtime.read { $0.abortCalls }, 0)
+        XCTAssertEqual(f.controller.session(for: f.scope)?.turns.last?.state, .cancelled)
+        XCTAssertNil(f.controller.session(for: f.scope)?.messages.first?.externalMessageID)
     }
 
     @MainActor func testSafetyConsentAndCatalogIndependentlyPreventSending() async throws {
@@ -422,6 +542,160 @@ final class SessionControllerTests: XCTestCase {
         XCTAssertEqual(f.runtime.read { $0.promptCalls }, 1)
     }
 
+    @MainActor func testShutdownDuringPreparedSavePreventsSessionCreationAndControllerReuse() async throws {
+        let f = try await fixture(); defer { f.controller.shutdown() }
+        let gate = SessionTestGate()
+        await f.store.gateSaves(gate, state: .prepared)
+        let operation = Task { await self.send(f) }
+        addTeardownBlock {
+            operation.cancel()
+            await gate.open()
+            _ = await operation.value
+        }
+        await eventually("prepared save suspended before shutdown") { await gate.waits == 1 }
+        XCTAssertEqual(f.runtime.read { $0.createCalls }, 0)
+        XCTAssertEqual(f.runtime.read { $0.eventsCalls }, 0)
+        XCTAssertEqual(f.runtime.read { $0.promptCalls }, 0)
+        f.controller.shutdown()
+        XCTAssertFalse(f.controller.canSend(scope: f.scope))
+
+        await gate.open()
+        let result = await operation.value
+        XCTAssertEqual(result, .notSubmitted)
+        XCTAssertEqual(f.controller.session(for: f.scope)?.turns.last?.state, .cancelled)
+        XCTAssertNil(f.controller.session(for: f.scope)?.messages.first?.externalMessageID)
+        let saved = try await f.store.backing.list().records
+        XCTAssertEqual(saved.first?.turns.last?.state, .cancelled)
+        XCTAssertNil(saved.first?.messages.first?.externalMessageID)
+        XCTAssertFalse(f.controller.canSend(scope: f.scope))
+        let retry = await send(f, text: "退出后不能复用控制器")
+        XCTAssertEqual(retry, .notSubmitted)
+        XCTAssertEqual(f.runtime.read { $0.createCalls }, 0)
+        XCTAssertEqual(f.runtime.read { $0.eventsCalls }, 0)
+        XCTAssertEqual(f.runtime.read { $0.promptCalls }, 0)
+    }
+
+    @MainActor func testShutdownDuringSessionCreationPreventsSubscriptionAndPrompt() async throws {
+        let f = try await fixture(); defer { f.controller.shutdown() }
+        let gate = SessionTestGate()
+        f.runtime.update { $0.createGate = gate }
+        let operation = Task { await self.send(f) }
+        addTeardownBlock {
+            operation.cancel()
+            await gate.open()
+            _ = await operation.value
+        }
+        await eventually("session creation suspended before shutdown") { await gate.waits == 1 }
+        XCTAssertEqual(f.runtime.read { $0.createCalls }, 1)
+        XCTAssertEqual(f.runtime.read { $0.eventsCalls }, 0)
+        XCTAssertEqual(f.runtime.read { $0.promptCalls }, 0)
+        f.controller.shutdown()
+        XCTAssertFalse(f.controller.canSend(scope: f.scope))
+
+        await gate.open()
+        let result = await operation.value
+        XCTAssertEqual(result, .notSubmitted)
+        XCTAssertEqual(f.controller.session(for: f.scope)?.turns.last?.state, .cancelled)
+        XCTAssertNil(f.controller.session(for: f.scope)?.messages.first?.externalMessageID)
+        let saved = try await f.store.backing.list().records
+        XCTAssertEqual(saved.first?.turns.last?.state, .cancelled)
+        XCTAssertNil(saved.first?.messages.first?.externalMessageID)
+        XCTAssertFalse(f.controller.canSend(scope: f.scope))
+        let retry = await send(f, text: "退出后不得继续新建会话")
+        XCTAssertEqual(retry, .notSubmitted)
+        XCTAssertEqual(f.runtime.read { $0.createCalls }, 1)
+        XCTAssertEqual(f.runtime.read { $0.eventsCalls }, 0)
+        XCTAssertEqual(f.runtime.read { $0.promptCalls }, 0)
+    }
+
+    @MainActor func testSafetyEventDuringSubmittingSavePreventsPromptAndClearsReservedIdentity() async throws {
+        for permissionRequested in [true, false] {
+            let f = try await fixture(); defer { f.controller.shutdown() }
+            let gate = SessionTestGate()
+            await f.store.gateSaves(gate, state: .submitting)
+            let operation = Task { await self.send(f) }
+            addTeardownBlock {
+                operation.cancel()
+                await gate.open()
+                _ = await operation.value
+            }
+            await eventually("submitting save suspended before safety event") { await gate.waits == 1 }
+            let session = try XCTUnwrap(f.controller.session(for: f.scope)?.binding?.externalSessionID)
+            let event: RuntimeStreamEvent = permissionRequested
+                ? .permissionRequested(sessionID: session, requestID: "per_before_prompt")
+                : .toolDetected(sessionID: session, toolName: "bash")
+            f.runtime.emit(event, sessionID: session)
+            await eventually("safety rejection and abort before prompt") {
+                f.runtime.read { $0.abortCalls >= 1 && (!permissionRequested || $0.rejectCalls == 1) }
+            }
+            XCTAssertEqual(f.runtime.read { $0.promptCalls }, 0)
+
+            await gate.open()
+            let result = await operation.value
+            XCTAssertEqual(result, .notSubmitted)
+            XCTAssertEqual(f.runtime.read { $0.promptCalls }, 0)
+            XCTAssertEqual(f.controller.session(for: f.scope)?.turns.last?.state, .failed)
+            XCTAssertNil(f.controller.session(for: f.scope)?.messages.first?.externalMessageID)
+            let saved = try await f.store.backing.list().records
+            XCTAssertEqual(saved.first?.turns.last?.state, .failed)
+            XCTAssertNil(saved.first?.messages.first?.externalMessageID)
+        }
+    }
+
+    @MainActor func testStreamDisconnectDuringSubmittingSavePreventsPrompt() async throws {
+        let f = try await fixture(); defer { f.controller.shutdown() }
+        let gate = SessionTestGate()
+        await f.store.gateSaves(gate, state: .submitting)
+        let operation = Task { await self.send(f) }
+        addTeardownBlock {
+            operation.cancel()
+            await gate.open()
+            _ = await operation.value
+        }
+        await eventually("submitting save suspended before stream disconnect") { await gate.waits == 1 }
+        let session = try XCTUnwrap(f.controller.session(for: f.scope)?.binding?.externalSessionID)
+        f.runtime.closeStream(sessionID: session)
+        // Give the consumer a turn to record disconnection while persistence remains suspended.
+        try await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertEqual(f.runtime.read { $0.promptCalls }, 0)
+
+        await gate.open()
+        let result = await operation.value
+        XCTAssertEqual(result, .notSubmitted)
+        XCTAssertEqual(f.runtime.read { $0.promptCalls }, 0)
+        XCTAssertEqual(f.controller.session(for: f.scope)?.turns.last?.state, .failed)
+        XCTAssertNil(f.controller.session(for: f.scope)?.messages.first?.externalMessageID)
+        let saved = try await f.store.backing.list().records
+        XCTAssertEqual(saved.first?.turns.last?.state, .failed)
+        XCTAssertNil(saved.first?.messages.first?.externalMessageID)
+    }
+
+    @MainActor func testShutdownDuringSubmittingSavePreventsPrompt() async throws {
+        let f = try await fixture(); defer { f.controller.shutdown() }
+        let gate = SessionTestGate()
+        await f.store.gateSaves(gate, state: .submitting)
+        let operation = Task { await self.send(f) }
+        addTeardownBlock {
+            operation.cancel()
+            await gate.open()
+            _ = await operation.value
+        }
+        await eventually("submitting save suspended before shutdown") { await gate.waits == 1 }
+        f.controller.shutdown()
+        XCTAssertEqual(f.runtime.read { $0.promptCalls }, 0)
+
+        await gate.open()
+        let result = await operation.value
+        XCTAssertEqual(result, .notSubmitted)
+        XCTAssertEqual(f.runtime.read { $0.promptCalls }, 0)
+        XCTAssertEqual(f.controller.session(for: f.scope)?.turns.last?.state, .cancelled)
+        XCTAssertNil(f.controller.session(for: f.scope)?.messages.first?.externalMessageID)
+        let saved = try await f.store.backing.list().records
+        XCTAssertEqual(saved.first?.turns.last?.state, .cancelled)
+        XCTAssertNil(saved.first?.messages.first?.externalMessageID)
+        XCTAssertFalse(f.controller.canSend(scope: f.scope))
+    }
+
     @MainActor func testQueuedStopAfterAcknowledgmentWriteFailsStillAborts() async throws {
         let f = try await fixture(); defer { f.controller.shutdown() }
         let gate = SessionTestGate()
@@ -560,5 +834,29 @@ final class SessionControllerTests: XCTestCase {
         XCTAssertEqual(f.controller.session(for: f.scope)?.messages.last?.text, "已核对的部分回复")
         XCTAssertEqual(f.runtime.read { $0.promptCalls }, 1)
         XCTAssertFalse(f.controller.isGenerating(scope: f.scope))
+    }
+
+    @MainActor func testReconciliationSubscriptionFailureKeepsBusyTurnUnknown() async throws {
+        let f = try await fixture(); defer { f.controller.shutdown() }
+        f.runtime.update { $0.completeReplies = false }
+        let result = await send(f)
+        XCTAssertEqual(result, .accepted)
+        let session = try XCTUnwrap(f.controller.session(for: f.scope)?.binding?.externalSessionID)
+        XCTAssertEqual(f.controller.session(for: f.scope)?.turns.last?.state, .streaming)
+        f.runtime.closeStream(sessionID: session)
+        await eventually("busy turn unknown after stream disconnect") {
+            f.controller.session(for: f.scope)?.turns.last?.state == .unknown && !f.controller.isGenerating(scope: f.scope)
+        }
+        XCTAssertEqual(f.runtime.read { $0.statuses[session] }, .busy)
+        XCTAssertEqual(f.runtime.read { $0.eventsCalls }, 1)
+        f.runtime.update { $0.subscriptionFailure = .httpStatus(503) }
+
+        await f.controller.reconcileSession(scope: f.scope)
+        XCTAssertEqual(f.runtime.read { $0.eventsCalls }, 2)
+        XCTAssertEqual(f.runtime.read { $0.promptCalls }, 1)
+        XCTAssertEqual(f.controller.session(for: f.scope)?.turns.last?.state, .unknown)
+        XCTAssertFalse(f.controller.isGenerating(scope: f.scope))
+        let saved = try await f.store.backing.list().records
+        XCTAssertEqual(saved.first?.turns.last?.state, .unknown)
     }
 }

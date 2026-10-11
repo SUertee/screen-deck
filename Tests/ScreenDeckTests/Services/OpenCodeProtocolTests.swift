@@ -149,8 +149,8 @@ final class OpenCodeProtocolTests: XCTestCase {
             return (200, try self.response(path: request.url!.path))
         }
         _ = try await client.connect()
-        let stream = client.events(sessionID: "ses_test")
-        do { for try await _ in stream { XCTFail() }; XCTFail() } catch { XCTAssertTrue(error is OpenCodeError) }
+        do { _ = try await client.events(sessionID: "ses_test"); XCTFail() }
+        catch { XCTAssertTrue(error is OpenCodeError) }
         XCTAssertEqual(OpenCodeTestURLProtocol.requests.map { $0.url!.path }, ["/global/health"])
     }
 

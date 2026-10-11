@@ -3,7 +3,7 @@ import Foundation
 /// Fixed v1.18.35 adapter. Connecting does not create a session or call a model.
 /// HTTP-visible settings cannot attest the server's environment / discovered AGENTS.
 /// Until a ScreenDeck-owned startup proof exists, this client stays diagnostic-only.
-final class OpenCodeClient: RuntimeClient, @unchecked Sendable {
+final class OpenCodeClient: ExecutionDriver, @unchecked Sendable {
     static let compatibleVersion = "1.18.35"
     // Contract provenance: anomalyco/opencode commit 53d1eabb61e21162157817bf677da0a4ad3332e3,
     // packages/sdk/openapi.json. The adapter is ScreenDeck-authored, not copied runtime code.
@@ -155,20 +155,27 @@ final class OpenCodeClient: RuntimeClient, @unchecked Sendable {
         guard result as? Bool == true else { throw OpenCodeError.malformedResponse }
     }
 
-    func events(sessionID: String) -> AsyncThrowingStream<RuntimeStreamEvent, Error> {
-        AsyncThrowingStream(bufferingPolicy: .bufferingOldest(256)) { continuation in
+    func events(sessionID: String) async throws -> AsyncThrowingStream<RuntimeStreamEvent, Error> {
+        try await requireConnected()
+        try Self.validateIdentifier(sessionID, prefix: "ses")
+        var request = try makeRequest(path: "/event")
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        // Long-lived SSE still has a bounded inactivity timeout; disconnect is visible.
+        request.timeoutInterval = 90
+        let (bytes, response) = try await transport.bytes(for: request)
+        do {
+            try Task.checkCancellation()
+            try checkResponse(response)
+            guard (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type")?.lowercased().hasPrefix("text/event-stream") == true else { throw OpenCodeError.malformedResponse }
+        } catch {
+            bytes.task.cancel()
+            throw error
+        }
+        return AsyncThrowingStream(bufferingPolicy: .bufferingOldest(256)) { continuation in
             let task = Task { [weak self] in
-                guard let self else { continuation.finish(); return }
+                defer { bytes.task.cancel() }
+                guard self != nil else { continuation.finish(); return }
                 do {
-                    try await self.requireConnected()
-                    try Self.validateIdentifier(sessionID, prefix: "ses")
-                    var request = try self.makeRequest(path: "/event")
-                    request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-                    // Long-lived SSE still has a bounded inactivity timeout; disconnect is visible.
-                    request.timeoutInterval = 90
-                    let (bytes, response) = try await self.transport.bytes(for: request)
-                    try self.checkResponse(response)
-                    guard (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type")?.lowercased().hasPrefix("text/event-stream") == true else { throw OpenCodeError.malformedResponse }
                     var decoder = OpenCodeSSEDecoder()
                     var mapper = OpenCodeEventMapper(sessionID: sessionID)
                     var chunk = Data()
@@ -192,7 +199,7 @@ final class OpenCodeClient: RuntimeClient, @unchecked Sendable {
                 } catch is CancellationError { continuation.finish() }
                 catch { continuation.finish(throwing: error) }
             }
-            continuation.onTermination = { @Sendable _ in task.cancel() }
+            continuation.onTermination = { @Sendable _ in bytes.task.cancel(); task.cancel() }
         }
     }
 

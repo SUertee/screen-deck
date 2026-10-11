@@ -1,0 +1,58 @@
+project: ScreenDeck Electron
+register: product
+surface: desktop-workbench
+direction: user-confirmed-monochrome
+palette:
+  page: '#F5F5F5'
+  content: '#FCFCFC'
+  text: '#1C1C1C'
+  secondary_text: '#626262'
+  action: '#202020'
+  on_action: '#FCFCFC'
+  selection: '#EAEAEA'
+  deck_page: '#101010'
+  deck_content: '#171717'
+  deck_text: '#F2F2F2'
+  deck_secondary_text: '#ABABAB'
+type:
+  family: system-sans
+  base: 13px
+  heading: 19px
+  welcome: 27px
+layout:
+  topbar: 48px
+  sidebar: 224px
+  sidebar_macos: 252px
+  detail: 356px
+  composer_max: 780px
+  narrow_detail: modal-drawer-with-background-inert
+  narrow_sidebar_macos: 112px
+  deck_native_controls_clearance: 60px
+brand:
+  logo: two-separate-true-semicircles
+  lobe: 11x22px
+  gap: 2px
+  geometry: flat-edges-outward-curved-edges-facing
+rules:
+  - no-default-sample-data
+  - native-window-traffic-lights
+  - one-task-title
+  - project-records-readonly-historical
+  - preview-plan-save-does-not-execute
+  - requested-and-observed-model-separated
+  - no-raw-html-or-remote-message-images
+  - settings-focus-trap-and-background-inert
+  - ime-enter-does-not-submit
+  - resident-send-stop-slot
+  - busy-and-stop-bound-to-visible-session
+  - overview-goal-process-decision-output
+  - compact-materials-two-before-disclosure
+  - recorded-summary-220-characters-with-full-original
+  - unsaved-key-cleared-on-settings-close
+  - in-flight-settings-and-plan-edits-disabled
+skills:
+  - finesse-ui
+  - product-ui
+  - workflow-ui
+  - ai-console
+  - product-palettes

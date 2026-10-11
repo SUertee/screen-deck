@@ -16,3 +16,12 @@ docs/
 
 # 本机 Agent 执行历史（保留本地，不随源码同步）
 /AGENTLOG.md
+
+# Electron / Node.js 构建与本机调试产物
+/desktop/node_modules/
+/desktop/dist/
+/desktop/dist-release/
+/desktop/artifacts/
+/desktop/.env
+/desktop/.env.*
+/desktop/*.tsbuildinfo

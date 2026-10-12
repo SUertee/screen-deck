@@ -48,7 +48,8 @@ export function TaskDetails({ task, projectName, runs, references, plans, model,
   const previewGeneration = useRef(0);
   useEffect(() => { previewGeneration.current++; setTab('overview'); setContainerTab('task'); setPreview(null); setPreviewReference(null); setPreviewError(''); setPreviewLoading(false); }, [task?.project_id, task?.task_id]);
   useEffect(() => {
-    const media = matchMedia('(max-width: 1180px)');
+    // Matches styles.css: compact panels lock chat; desktop columns remain interactive.
+    const media = matchMedia('(max-width: 960px)');
     let lastFocus: HTMLElement | null = null;
     const update = () => {
       const center = document.getElementById('center-column');

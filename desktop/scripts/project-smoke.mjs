@@ -185,8 +185,8 @@ try {
     return { viewport: innerWidth, panel: { left: panel.left, right: panel.right, top: panel.top, width: panel.width }, headerBottom: header.bottom, overlap: model.right > send.left, tabsInside: tabs.left >= panel.left && tabs.right <= panel.right, horizontalOverflow: document.documentElement.scrollWidth > innerWidth };
   });
   assert.equal(geometry.panel.right, 860);
-  assert.equal(geometry.panel.width, 332);
-  assert.equal(geometry.panel.top, geometry.headerBottom);
+  assert.equal(geometry.panel.width, 360);
+  assert.equal(geometry.panel.top, 0);
   assert.equal(geometry.overlap, false);
   assert.equal(geometry.tabsInside, true);
   assert.equal(geometry.horizontalOverflow, false);

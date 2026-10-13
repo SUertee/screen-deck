@@ -12,7 +12,8 @@
     "dev": "npm run setup:electron && npm run build && npm start",
     "test": "node scripts/test.mjs",
     "package:mac": "npm run setup:electron && npm run build && node scripts/package-mac.mjs",
-    "smoke": "npm run setup:electron && npm run build && node scripts/smoke.mjs"
+    "smoke": "npm run setup:electron && npm run build && node scripts/smoke.mjs",
+    "smoke:layout": "npm run setup:electron && npm run build && node scripts/layout-smoke.mjs"
   },
   "dependencies": {
     "ajv": "8.20.0",

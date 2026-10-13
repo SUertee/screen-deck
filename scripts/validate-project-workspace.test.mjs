@@ -10,8 +10,9 @@ import { validateWorkspace } from './validate-project-workspace.mjs';
 
 const runProcess = promisify(execFile);
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-// Use the shipped contract, rather than a second field-definition copy in tests.
-const schema = JSON.parse(await readFile(path.join(repo, 'Resources/Schemas/record.schema.json'), 'utf8'));
+// Copy the single shipped rules source; fixture apps never keep a JSON rule copy.
+const schemaRelative = 'desktop/src/projects/record-schema.ts';
+const schemaSource = await readFile(path.join(repo, schemaRelative), 'utf8');
 const projectId = 'project-12345678-1234-1234-1234-123456789abc';
 const timestamp = '2026-10-06T10:00:00+08:00';
 const taskFile = '.screendeck/tasks/task-001.json';
@@ -63,9 +64,10 @@ async function applicationFixture(t) {
   const root = await mkdtemp(path.join(tmpdir(), 'screendeck-validator-app-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(path.join(root, 'scripts'), { recursive: true });
-  await mkdir(path.join(root, 'Resources/Schemas'), { recursive: true });
+  await mkdir(path.join(root, 'desktop/src/projects'), { recursive: true });
   await put(root, 'scripts/validate-project-workspace.mjs', await readFile(path.join(repo, 'scripts/validate-project-workspace.mjs'), 'utf8'));
-  await put(root, 'Resources/Schemas/record.schema.json', schema);
+  await put(root, schemaRelative, schemaSource);
+  await put(root, 'desktop/package.json', await readFile(path.join(repo, 'desktop/package.json'), 'utf8'));
   return { root, executable: path.join(root, 'scripts/validate-project-workspace.mjs') };
 }
 
@@ -304,14 +306,15 @@ test('references refuse symlink files and directory components even inside the p
   assert.equal((await validateWorkspace(root)).errors.filter(error => error.includes('symbolic link')).length, 2);
 });
 
-test('symlink record directories and shipped schema files are refused', async t => {
+test('symlink record directories and shipped rules source are refused', async t => {
   const { root } = await fixture(t);
   await rename(path.join(root, '.screendeck/tasks'), path.join(root, '.screendeck/task-backup'));
   await symlink(path.join(root, '.screendeck/task-backup'), path.join(root, '.screendeck/tasks'));
   await expectInvalid(root, /symbolic link/);
   const app = await applicationFixture(t);
-  await rename(path.join(app.root, 'Resources/Schemas/record.schema.json'), path.join(app.root, 'Resources/Schemas/source.json'));
-  await symlink(path.join(app.root, 'Resources/Schemas/source.json'), path.join(app.root, 'Resources/Schemas/record.schema.json'));
+  const source = path.join(app.root, 'desktop/src/projects/source.ts');
+  await rename(path.join(app.root, schemaRelative), source);
+  await symlink(source, path.join(app.root, schemaRelative));
   await assert.rejects(runProcess(process.execPath, [app.executable, '--root', root]), error => error.code === 1 && /schema: symbolic link/.test(error.stderr));
 });
 
@@ -326,16 +329,24 @@ test('missing workspace, project or collection directories fail explicitly', asy
   await expectInvalid(root, /project.json:/);
 });
 
-test('unknown shipped schema keywords fail closed, and shipped schema edits drive validation', async t => {
+test('unknown shipped rule keywords fail closed, and shared source edits drive validation', async t => {
   const { root, task } = await fixture(t);
   const app = await applicationFixture(t);
-  const edited = structuredClone(schema);
-  edited.$defs.task.properties.title.minLength = 50;
-  await put(app.root, 'Resources/Schemas/record.schema.json', edited);
+  const edited = `${schemaSource}\nrecordSchema.$defs.task.properties.title.minLength = 50;\n`;
+  await put(app.root, schemaRelative, edited);
   await assert.rejects(runProcess(process.execPath, [app.executable, '--root', root]), error => error.code === 1 && /title: below minLength/.test(error.stderr));
-  edited.$defs.task.properties.title.not = { const: task.title };
-  await put(app.root, 'Resources/Schemas/record.schema.json', edited);
+  await put(app.root, schemaRelative, `${edited}\nObject.assign(recordSchema.$defs.task.properties.title, { not: { const: ${JSON.stringify(task.title)} } });\n`);
   await assert.rejects(runProcess(process.execPath, [app.executable, '--root', root]), error => error.code === 1 && /unsupported keyword not/.test(error.stderr));
+});
+
+test('CLI uses the date validator exported by the shared rules source', async t => {
+  const { root } = await fixture(t);
+  const app = await applicationFixture(t);
+  assert.match((await runProcess(process.execPath, [app.executable, '--root', root])).stdout, /Workspace valid: 1 project, 1 tasks, 1 runs/);
+  const original = 'return Number.isFinite(Date.parse(value));';
+  assert.equal(schemaSource.split(original).length, 2, 'Change the shared date function, not a fixture copy of its rules.');
+  await put(app.root, schemaRelative, schemaSource.replace(original, 'return false;'));
+  await assert.rejects(runProcess(process.execPath, [app.executable, '--root', root]), error => error.code === 1 && /created_at: invalid date-time/.test(error.stderr));
 });
 
 test('validator does not create, change or delete workspace or reference files', async t => {

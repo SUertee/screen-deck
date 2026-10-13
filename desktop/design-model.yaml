@@ -20,12 +20,15 @@ type:
   heading: 19px
   welcome: 27px
 layout:
+  shell: three-full-height-columns
+  headers: independent-aligned
   topbar: 48px
   sidebar: 224px
   sidebar_macos: 252px
-  detail: 356px
+  detail: clamp(332px, 29vw, 464px)
   composer_max: 780px
   narrow_detail: modal-drawer-with-background-inert
+  narrow_detail_max_width: 960px
   narrow_sidebar_macos: 112px
   deck_native_controls_clearance: 60px
 brand:

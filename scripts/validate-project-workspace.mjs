@@ -1,16 +1,16 @@
 #!/usr/bin/env node
-// Read-only validator for the explicitly bounded schema subset in record.schema.json.
+// Read-only validator for the explicitly bounded schema subset in the shared record-schema.ts module.
 // It never interprets references, summaries, or JSON fields as executable instructions.
 import { constants } from 'node:fs';
 import { lstat, open, readdir, readlink, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 
 const MAX_JSON_BYTES = 2 * 1024 * 1024;
 const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const SUPPORTED = new Set(['$schema', '$defs', '$ref', 'title', 'description', 'oneOf',
+const SUPPORTED = new Set(['$schema', '$id', '$defs', '$ref', 'title', 'description', 'oneOf',
   'type', 'const', 'enum', 'minimum', 'minLength', 'maxLength', 'minItems',
   'maxItems', 'uniqueItems', 'pattern', 'format', 'required', 'properties',
   'items', 'additionalProperties']);
@@ -21,6 +21,9 @@ function assertSchema(schema, root, trail = 'schema', refs = new Set()) {
   }
   for (const key of Object.keys(schema)) {
     if (!SUPPORTED.has(key)) throw new Error(`${trail}: unsupported keyword ${key}`);
+  }
+  if (schema.$id !== undefined && (typeof schema.$id !== 'string' || !schema.$id.length)) {
+    throw new Error(`${trail}: invalid $id`);
   }
   for (const key of ['$defs', 'properties']) {
     if (schema[key] !== undefined && !matchesType(schema[key], 'object')) throw new Error(`${trail}: invalid ${key}`);
@@ -85,25 +88,12 @@ function matchesType(value, type) {
   return typeof value === type;
 }
 
-// Require a real calendar date and explicit timezone; Date.parse alone normalizes bad dates.
-function isDateTime(value) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$/u.exec(value);
-  if (!m) return false;
-  const [year, month, day, hour, minute, second] = m.slice(1, 7).map(Number);
-  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
-  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-  if (month < 1 || month > 12 || day < 1 || day > days[month - 1]
-    || hour > 23 || minute > 59 || second > 59) return false;
-  if (m[7] !== 'Z' && (Number(m[7].slice(1, 3)) > 23 || Number(m[7].slice(4)) > 59)) return false;
-  return Number.isFinite(Date.parse(value));
-}
-
-function validateValue(value, schema, root, trail, errors) {
-  if (schema.$ref) validateValue(value, resolveRef(root, schema.$ref), root, trail, errors);
+function validateValue(value, schema, root, trail, errors, isStrictTimestamp) {
+  if (schema.$ref) validateValue(value, resolveRef(root, schema.$ref), root, trail, errors, isStrictTimestamp);
   if (schema.oneOf) {
     const candidates = schema.oneOf.map(child => {
       const issues = [];
-      validateValue(value, child, root, trail, issues);
+      validateValue(value, child, root, trail, issues, isStrictTimestamp);
       return issues;
     });
     if (candidates.filter(issues => issues.length === 0).length !== 1) {
@@ -126,7 +116,7 @@ function validateValue(value, schema, root, trail, errors) {
     if (schema.minLength !== undefined && length < schema.minLength) errors.push(`${trail}: below minLength`);
     if (schema.maxLength !== undefined && length > schema.maxLength) errors.push(`${trail}: above maxLength`);
     if (schema.pattern && !new RegExp(schema.pattern, 'u').test(value)) errors.push(`${trail}: pattern mismatch`);
-    if (schema.format === 'date-time' && !isDateTime(value)) errors.push(`${trail}: invalid date-time with timezone`);
+    if (schema.format === 'date-time' && !isStrictTimestamp(value)) errors.push(`${trail}: invalid date-time with timezone`);
   }
   if (Array.isArray(value)) {
     if (schema.minItems !== undefined && value.length < schema.minItems) errors.push(`${trail}: below minItems`);
@@ -134,7 +124,7 @@ function validateValue(value, schema, root, trail, errors) {
     if (schema.uniqueItems && value.some((item, i) => value.slice(0, i).some(other => isDeepStrictEqual(item, other)))) {
       errors.push(`${trail}: duplicate array item`);
     }
-    if (schema.items) value.forEach((item, i) => validateValue(item, schema.items, root, `${trail}[${i}]`, errors));
+    if (schema.items) value.forEach((item, i) => validateValue(item, schema.items, root, `${trail}[${i}]`, errors, isStrictTimestamp));
   }
   if (matchesType(value, 'object')) {
     for (const key of schema.required ?? []) {
@@ -142,7 +132,7 @@ function validateValue(value, schema, root, trail, errors) {
     }
     for (const [key, item] of Object.entries(value)) {
       if (Object.hasOwn(schema.properties ?? {}, key)) {
-        validateValue(item, schema.properties[key], root, `${trail}.${key}`, errors);
+        validateValue(item, schema.properties[key], root, `${trail}.${key}`, errors, isStrictTimestamp);
       } else if (schema.additionalProperties === false) errors.push(`${trail}.${key}: unexpected field`);
     }
   }
@@ -218,9 +208,21 @@ export async function validateWorkspace(projectRoot, options = {}) {
   } catch (error) {
     return { root, errors: [`root: ${error.message}`], counts };
   }
-  let schema;
+  let schema, isStrictTimestamp;
   try {
-    schema = await readJSON(APP_ROOT, 'Resources/Schemas/record.schema.json');
+    // Load only application code, never rules supplied by the project being validated.
+    const { fullPath, stat } = await safeStat(APP_ROOT, 'desktop/src/projects/record-schema.ts');
+    if (!stat.isFile()) throw new Error('expected a regular record rules module');
+    let rules;
+    try {
+      rules = await import(pathToFileURL(fullPath).href);
+    } catch (error) {
+      if (error.code === 'ERR_UNKNOWN_FILE_EXTENSION') throw new Error('record rules require Node with native TypeScript stripping (tested on Node 22.21.1)');
+      throw error;
+    }
+    schema = rules.recordSchema;
+    isStrictTimestamp = rules.isStrictTimestamp;
+    if (typeof isStrictTimestamp !== 'function') throw new Error('missing timestamp validator');
     assertSchema(schema, schema);
     for (const kind of ['project', 'project_identity', 'project_history', 'task', 'run']) {
       if (!schema.$defs?.[kind]) throw new Error(`missing ${kind} definition`);
@@ -232,7 +234,7 @@ export async function validateWorkspace(projectRoot, options = {}) {
     try {
       const value = await readJSON(storageRoot, relative);
       const issues = [];
-      validateValue(value, schema.$defs[expectedKind], schema, file, issues);
+      validateValue(value, schema.$defs[expectedKind], schema, file, issues, isStrictTimestamp);
       errors.push(...issues);
       return issues.length ? null : { value, file };
     } catch (error) { errors.push(`${file}: ${error.message}`); return null; }
@@ -244,7 +246,7 @@ export async function validateWorkspace(projectRoot, options = {}) {
     identity = await readJSON(root, identityFile);
     if (![1, 2].includes(identity.schema_version)) throw new Error('unsupported project schema_version');
     const issues = [];
-    validateValue(identity, schema.$defs[identity.schema_version === 1 ? 'project' : 'project_identity'], schema, identityFile, issues);
+    validateValue(identity, schema.$defs[identity.schema_version === 1 ? 'project' : 'project_identity'], schema, identityFile, issues, isStrictTimestamp);
     errors.push(...issues);
     if (!issues.length) project = { value: identity, file: identityFile };
   } catch (error) { errors.push(`${identityFile}: ${error.message}`); }

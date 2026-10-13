@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url';
 import { StorageError } from '../core/index.js';
 import { ProjectReadFailure } from '../projects/index.js';
 import type { DesktopEvent } from '../shared/desktop-api.js';
+import type { TaskSessionEvent } from '../shared/task-execution.js';
 import { isTrustedURL } from './ipc-validation.js';
 
 /** Owns Electron windows and the trusted renderer boundary, never domain state. */
@@ -30,6 +31,10 @@ export class ElectronHost {
 
   broadcast(event: DesktopEvent): void {
     for (const window of this.windows) if (!window.isDestroyed()) window.webContents.send('screendeck:event', event);
+  }
+
+  broadcastTask(event: TaskSessionEvent): void {
+    for (const window of this.windows) if (!window.isDestroyed()) window.webContents.send('screendeck:task-event', event);
   }
 
   handle(channel: string, operation: (input: unknown) => unknown): void {

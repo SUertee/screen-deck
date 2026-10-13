@@ -44,7 +44,8 @@ export function installDesktopRoutes(dependencies: DesktopRouteDependencies): vo
 
   handler('bootstrap', async (): Promise<BootstrapResult> => {
     const sessions = await manager.listSessions();
-    return { settings: settings.publicSettings(), sessions: sessions.records, projects: projects.list(), plans: await plans.listPlans(), diagnostics: [...diagnostics, ...settings.diagnostics, ...sessions.diagnostics.map(issue => issue.reason)], dataRootLabel: previewRoot };
+    const taskSessions = await manager.listTaskSessions?.() ?? { records: [], diagnostics: [] };
+    return { settings: settings.publicSettings(), sessions: sessions.records, taskSessions: taskSessions.records, projects: projects.list(), plans: await plans.listPlans(), diagnostics: [...diagnostics, ...settings.diagnostics, ...sessions.diagnostics.map(issue => issue.reason), ...taskSessions.diagnostics.map(issue => issue.reason)], dataRootLabel: previewRoot };
   });
   handler('create-session', async input => {
     const value = payload(input, ['title', 'scope']);

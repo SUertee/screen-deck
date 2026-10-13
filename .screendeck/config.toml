@@ -2,7 +2,7 @@
 config_version = 1
 
 [workspace]
-editable_roots = ["desktop", "scripts", "Resources/Schemas"]
+editable_roots = ["desktop", "scripts"]
 protected_paths = [".git", ".screendeck/project.json", "archive"]
 ignored_paths = ["archive", "desktop/node_modules", "desktop/dist", "desktop/dist-release", "desktop/artifacts"]
 

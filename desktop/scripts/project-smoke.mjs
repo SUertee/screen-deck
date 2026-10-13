@@ -116,7 +116,7 @@ try {
   await expect(recent).toHaveClass(/active/);
   await expect(input).toHaveValue('只属于这次隔离会话的草稿。');
   const detailPanel = page.locator('.detail-panel');
-  if (!await detailPanel.isVisible()) await page.getByRole('button', { name: '任务详情', exact: true }).click();
+  if (!await detailPanel.isVisible()) await page.getByRole('button', { name: '展开右栏', exact: true }).click();
   const screenshot = async (filename) => { await page.screenshot({ path: path.join(screenshotRoot, filename) }); screenshots.push(filename); };
   const assertConversation = async () => { await expect(recent).toHaveClass(/active/); await expect(input).toHaveValue('只属于这次隔离会话的草稿。'); };
   await page.getByRole('tab', { name: '概览', exact: true }).click();
@@ -125,6 +125,7 @@ try {
   await assertConversation();
   await screenshot('project-task-overview-wide.png');
   await page.getByRole('tab', { name: '分工', exact: true }).click();
+  await page.getByRole('button', { name: '编辑计划', exact: true }).click();
   await page.getByRole('button', { name: '添加工作项', exact: true }).click();
   await page.getByRole('textbox', { name: '工作项 1 内容', exact: true }).fill('隔离验收：确认下一步分工');
   await page.getByRole('textbox', { name: '工作项 1 预期结果', exact: true }).fill('保存一项未执行的独立预览计划。');
@@ -156,9 +157,9 @@ try {
   await page.getByRole('tab', { name: '交付', exact: true }).click();
   const readable = workspace.artifact_refs.filter(ref => ref.preview_type !== 'unsupported' && (ref.owner_kind === 'task' && ref.owner_id === task.task_id || ref.owner_kind === 'run' && workspace.runs.some(run => run.run_id === ref.owner_id && run.task_id === task.task_id)));
   for (const reference of readable) {
-    const link = page.locator('.artifact-link').filter({ hasText: reference.label }).first();
+    const link = page.locator('.artifact-link, .task-material').filter({ hasText: reference.label }).first();
     if (!await link.isVisible()) { await page.getByRole('tab', { name: '概览', exact: true }).click(); }
-    const candidate = page.locator('.artifact-link').filter({ hasText: reference.label }).first();
+    const candidate = page.locator('.artifact-link, .task-material').filter({ hasText: reference.label }).first();
     if (!await candidate.isVisible()) continue;
     await candidate.click();
     await expect.poll(async () => page.locator('.file-content pre, .file-content img, .file-content .notice').count()).toBeGreaterThan(0);
@@ -185,8 +186,8 @@ try {
     return { viewport: innerWidth, panel: { left: panel.left, right: panel.right, top: panel.top, width: panel.width }, headerBottom: header.bottom, overlap: model.right > send.left, tabsInside: tabs.left >= panel.left && tabs.right <= panel.right, horizontalOverflow: document.documentElement.scrollWidth > innerWidth };
   });
   assert.equal(geometry.panel.right, 860);
-  assert.equal(geometry.panel.width, 332);
-  assert.equal(geometry.panel.top, geometry.headerBottom);
+  assert.equal(geometry.panel.width, 360);
+  assert.equal(geometry.panel.top, 0);
   assert.equal(geometry.overlap, false);
   assert.equal(geometry.tabsInside, true);
   assert.equal(geometry.horizontalOverflow, false);
@@ -195,8 +196,8 @@ try {
   await page.getByRole('tab', { name: '分工', exact: true }).click();
   await expect(page.getByRole('textbox', { name: '工作项 1 内容', exact: true })).toHaveValue(plan.work_items[0].title);
   await screenshot('project-task-division-narrow.png');
-  await page.getByRole('button', { name: '关闭详情面板', exact: true }).click();
-  await expect(page.locator('.detail-panel')).toHaveCount(0);
+  await page.getByRole('button', { name: '关闭任务详情', exact: true }).click({ position: { x: 12, y: 60 } });
+  await expect(page.locator('.detail-panel')).toBeHidden();
   assert.equal(await page.locator('#center-column').evaluate(node => node.inert), false);
   await assertConversation();
   const refreshed = await page.evaluate(id => window.screendeck.refreshProject(id), projectID);

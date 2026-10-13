@@ -1,0 +1,14 @@
+/* finesse · register=product · component=task-history
+ * A=approved-monochrome B=system-sans C=inline-chat-history D=feedback-only E=existing-tokens
+ * SOUL=6 SPECTACLE=1 DENSITY=6; reuse approved chat/task prototype. */
+.task-execution-history { width: 100%; margin: 24px 0; min-width: 0; }
+.task-history-heading, .task-history-heading > div { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.task-history-heading { justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+.task-history-heading strong { font-size: 13px; white-space: nowrap; }
+.task-history-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-2); font-size: 12px; }
+.task-history-source { color: var(--ink-3); font-size: 11px; line-height: 1.7; margin: 8px 0 12px; }
+.task-history-pending { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 12px 0; }
+.task-history-recovery { margin: 8px 0 20px; }
+.task-execution-history .execution-attempt { margin-top: 20px; }
+.task-execution-history .task-history-input { padding: 14px 0; margin-top: 12px; }
+.task-execution-history .execution-review textarea { width: 100%; }

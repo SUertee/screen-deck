@@ -15,8 +15,8 @@ informational diagnostic. First-load failures return `error` without partial
 tasks/runs. Failed refreshes retain an old snapshot as `stale`. The UI must show
 its diagnostic and stale state and cannot preview from that snapshot.
 
-Validation uses embedded strict AJV draft 2020-12 contracts matching the existing
-`Resources/Schemas/record.schema.json`, including its five-field v2 identity
+Validation compiles the shared [`record-schema.ts`](record-schema.ts) with strict
+AJV draft 2020-12, including its five-field v2 identity
 and v1 history/task/run records. It additionally checks root binding, record
 filenames and IDs, bidirectional task/run links, acceptance IDs, timestamp
 ordering, completed acceptance, and git facts. Migration backup paths are

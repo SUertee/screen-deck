@@ -8,6 +8,10 @@ import { ProviderSettingsStore } from './provider-settings.js';
 import { LocalState } from './local-state.js';
 import { ElectronHost } from './electron-host.js';
 import { installDesktopRoutes, persistProjectRegistry } from './desktop-routes.js';
+import { TaskSessionHistoryStore } from '../core/task-session-history-store.js';
+import { FakeTaskExecutionDriver } from '../core/fake-task-execution-driver.js';
+import { installTaskExecutionRoutes } from './task-execution-routes.js';
+import { ApprovalService } from '../core/approval-service.js';
 
 ElectronHost.registerScheme();
 app.setName('ScreenDeck Preview');
@@ -39,11 +43,12 @@ async function initialize(): Promise<void> {
       return new ChatCompletionsAdapter({ endpoint: snapshot.endpoint, credential: async () => snapshot.credential }).execute(request, onEvent, signal);
     },
   };
-  manager = new SessionManager({ store: new SessionHistoryStore(path.join(previewRoot, 'sessions')), driver });
+  const approvals = new ApprovalService(previewRoot);
+  manager = new SessionManager({ store: new SessionHistoryStore(path.join(previewRoot, 'sessions')), driver, task: { store: new TaskSessionHistoryStore(previewRoot), driver: new FakeTaskExecutionDriver(), resolveApproval: id => approvals.loadExecutionApproval(id) } });
   manager.subscribe(event => host.broadcast(event));
   const plans = new TaskOrchestrator(previewRoot);
   local = new LocalState(path.join(previewRoot, 'local-state'));
-  const projects = new ProjectWorkspaceReader();
+  const projects = new ProjectWorkspaceReader({ privateRoot: process.env.SCREENDECK_PROJECT_HISTORY_ROOT });
   try {
     const roots = await local.read<unknown>('project-roots', []);
     if (!Array.isArray(roots) || roots.length > 100 || roots.some(root => typeof root !== 'string' || !path.isAbsolute(root))) throw new Error();
@@ -55,6 +60,7 @@ async function initialize(): Promise<void> {
     settings, manager, projects, plans, local, host, diagnostics, previewRoot,
     withSettingsSnapshot: (snapshot, operation) => callSettings.run(snapshot, operation),
   });
+  installTaskExecutionRoutes({ manager, plans, projects, host, previewRoot, approvals });
   await host.showWorkbench();
 }
 

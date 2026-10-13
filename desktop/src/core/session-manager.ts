@@ -4,6 +4,10 @@ import { ExecutionError, type ExecutionDriver, type ExecutionEvent } from './exe
 import { StorageError } from './private-storage.js';
 import type { SessionHistoryStoring } from './session-history-store.js';
 import { SESSION_LIMITS, validateModel } from './session-schema.js';
+import type { ApprovalRequest, ExecutionSpec, TaskExecutionRequest, TaskSessionRef, TaskTurnRef } from '../shared/task-execution.js';
+import type { TaskSessionHistoryStoring } from './task-session-history-store.js';
+import type { TaskExecutionDriver } from './task-execution-driver.js';
+import { TaskSessionLifecycle } from './task-session-lifecycle.js';
 
 const terminal = new Set(['finished', 'failed', 'cancelled']);
 const comparable = (value: unknown): string => {
@@ -26,6 +30,7 @@ export interface SessionManagerOptions {
   driver: ExecutionDriver;
   now?: () => Date;
   persistIntervalMs?: number;
+  task?: { store: TaskSessionHistoryStoring; driver: TaskExecutionDriver; resolveApproval?: (id: string) => Promise<ApprovalRequest | undefined> };
 }
 
 /** Owns local turn state. Drivers cannot authorize tools, edit plans, or own this history. */
@@ -36,11 +41,28 @@ export class SessionManager {
   private readonly listeners = new Set<(event: SessionEvent) => void>();
   private readonly loading = new Map<string, Promise<SessionRecord | undefined>>();
   private closed = false;
-  constructor(private readonly options: SessionManagerOptions) {}
+  private readonly taskLifecycle?: TaskSessionLifecycle;
+  constructor(private readonly options: SessionManagerOptions) { if (options.task) this.taskLifecycle = new TaskSessionLifecycle(options.task.store, options.task.driver, options.now, options.task.resolveApproval); }
+
+  createTaskSession(input: { title: string; projectID: string; taskID: string }) { return this.tasks().create(input); }
+  listTaskSessions(input?: { projectID: string; taskID: string }) { return this.taskLifecycle?.list(input) ?? Promise.resolve({ records: [], diagnostics: [] }); }
+  loadTaskSession(ref: TaskSessionRef) { return this.tasks().load(ref); }
+  getTaskTurn(turn: TaskTurnRef) { return this.tasks().get(turn); }
+  prepareTaskTurn(input: { session: TaskSessionRef; clientRequestID: string; text: string; model: SendMessageInput['model']; spec: ExecutionSpec }) { return this.tasks().prepare(input); }
+  startTaskTurn(input: { turn: TaskTurnRef; approvalID: string; check: () => void; resolved: TaskExecutionRequest['resolved'] }) { return this.tasks().start(input); }
+  cancelTaskExecution(turn: TaskTurnRef) { return this.tasks().cancel(turn); }
+  replyTaskPermission(input: { turn: TaskTurnRef; approval: ApprovalRequest; check: () => void }) { return this.tasks().reply(input); }
+  reconcileTaskExecution(turn: TaskTurnRef) { return this.tasks().reconcile(turn); }
+  failPreparedTaskTurn(turn: TaskTurnRef, reason: string) { return this.tasks().failPrepared(turn, reason); }
+  hasTaskPendingWrites(id: string): boolean { return this.tasks().hasPending(id); }
+  retryTaskPendingWrites(ref: TaskSessionRef) { return this.tasks().retry(ref); }
+  subscribeTask(callback: Parameters<TaskSessionLifecycle['subscribe']>[0]) { return this.tasks().subscribe(callback); }
+  private tasks(): TaskSessionLifecycle { if (!this.taskLifecycle) throw new StorageError('unsupported', '任务执行能力尚未配置。'); return this.taskLifecycle; }
 
   async createSession(title: string, scope?: SessionScope): Promise<SessionRecord> {
     this.ensureOpen();
     const id = randomUUID(); const now = this.now();
+    if (await this.options.task?.store.load(id)) throw new StorageError('duplicate-session', '另一格式已使用此会话身份。');
     const record: SessionRecord = { schema_version: 1, conversation_id: id, title: title.trim(), scope: scope ?? { kind: 'local_chat', local_chat_id: id }, created_at: now, updated_at: now, revision: 0, turns: [], messages: [] };
     const saved = await this.options.store.save(record);
     this.cache.set(id, saved); this.updated(saved); return structuredClone(saved);
@@ -52,6 +74,12 @@ export class SessionManager {
     const records: SessionRecord[] = [];
     for (const record of listing.records) {
       const id = record.conversation_id;
+      try {
+        if (await this.options.task?.store.load(id)) throw new StorageError('duplicate-session', '两个格式声明相同会话身份。');
+      } catch (error) {
+        listing.diagnostics.push({ filename: `${id}.json`, reason: error instanceof StorageError ? error.message : '任务会话身份核对失败。' });
+        continue;
+      }
       if (this.active.has(id) || this.pendingWrites.has(id)) records.push(structuredClone(this.cache.get(id) ?? record));
       else records.push(structuredClone(await this.recover(record)));
     }
@@ -61,6 +89,7 @@ export class SessionManager {
 
   async loadSession(id: string): Promise<SessionRecord | undefined> {
     this.ensureOpen();
+    if (await this.options.task?.store.load(id)) throw new StorageError('duplicate-session', '任务会话不能作为普通聊天读取。');
     if (this.active.has(id) || this.pendingWrites.has(id)) return structuredClone(this.cache.get(id));
     const loading = this.loading.get(id);
     if (loading) return structuredClone(await loading);
@@ -171,6 +200,7 @@ export class SessionManager {
 
   async shutdown(): Promise<void> {
     this.closed = true;
+    await this.taskLifecycle?.shutdown();
     const turns = [...this.active.values()];
     for (const turn of turns) turn.controller.abort();
     await Promise.all(turns.map(turn => turn.done));

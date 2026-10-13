@@ -1,5 +1,6 @@
 import type { PreviewPlan, PreviewPlanScope, SessionEvent, SessionRecord, SessionScope, SendResult, DecisionRecommendation } from './types.js';
 import type { ArtifactPreview, ProjectWorkspaceResult } from '../projects/types.js';
+import type { TaskExecutionAPI, TaskSessionRecord } from './task-execution.js';
 
 export interface ProviderSettings {
   baseURL: string;
@@ -11,13 +12,14 @@ export interface SettingsInput { baseURL: string; modelID: string; apiKey?: stri
 export interface BootstrapResult {
   settings: ProviderSettings;
   sessions: SessionRecord[];
+  taskSessions?: TaskSessionRecord[];
   projects: ProjectWorkspaceResult[];
   plans: PreviewPlan[];
   diagnostics: string[];
   dataRootLabel: string;
 }
 export type DesktopEvent = SessionEvent | { type: 'settings-updated'; settings: ProviderSettings };
-export interface DesktopAPI {
+export interface DesktopAPI extends TaskExecutionAPI {
   bootstrap(): Promise<BootstrapResult>;
   createSession(input: { title: string; scope?: SessionScope }): Promise<SessionRecord>;
   loadSession(sessionID: string): Promise<SessionRecord | undefined>;

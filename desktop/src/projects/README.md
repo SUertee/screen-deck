@@ -40,5 +40,5 @@ Swift reader's descriptor-relative guarantee against a malicious concurrent
 process racing ancestor replacements. This limitation must remain in the
 handoff and must not be presented as equivalent to `openat`.
 
-The tests use disposable directories under `/private/tmp` and never operate on
+The tests use disposable directories under the canonical system temporary directory and never operate on
 the user's project identity or private task/capture records.

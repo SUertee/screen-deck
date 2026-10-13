@@ -17,7 +17,8 @@ concurrency:
 jobs:
   desktop-checks:
     name: Desktop checks
-    runs-on: ubuntu-latest
+    # The current desktop preview and guarded filesystem reader target macOS.
+    runs-on: macos-latest
     timeout-minutes: 15
     defaults:
       run:

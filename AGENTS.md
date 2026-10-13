@@ -43,7 +43,7 @@
 
 - 在 `desktop/` 按改动风险运行 `npm run typecheck`、`npm test`、`npm run build` 与隔离 `npm run smoke`；首次 Electron 安装需要联网，已有依赖时可直接运行相应脚本，避免无必要安装。
 - 界面或交互改动按范围验证窄窗、键盘、焦点与减少动态效果；PR 附截图或审核材料。只有显式修改归档 Swift 时才在归档内运行相应测试／构建。
-- `Desktop checks` 工作流在 dev/main 的 push 与 PR 上运行：Node.js 22.21.1、锁定依赖安装、类型检查、桌面单元测试、构建、根记录校验器的临时数据测试及提交空白检查。CI 不运行 Electron GUI、真实模型或外部执行；涉及这些边界时补本地隔离验证。CI 不强制分支／提交命名，也不部署或打包发行。
+- `Desktop checks` 工作流在 dev/main 的 push 与 PR 上运行：macOS runner、Node.js 22.21.1、锁定依赖安装、类型检查、桌面单元测试、构建、根记录校验器的临时数据测试及提交空白检查。CI 不运行 Electron GUI、真实模型或外部执行；涉及这些边界时补本地隔离验证。CI 不强制分支／提交命名，也不部署或打包发行。
 - 文档检查引用及 `git diff --check`；代码检查与 smoke 不等于业务、视觉或公开发行验收。PR 写清具体问题、行为变化、实际验证和未覆盖项；不照抄官网的网页检查命令。
 - 阶段完成、失败、中断或交接时，更新本地 AGENTLOG 的三项摘要并追加执行记录：任务 ID、主题、时间、改动、实际使用的 skill、Agent／模型、验证、提交／推送状态、限制与下一步。未知元信息写 unknown，未提交写 none；不把当前 HEAD 当本次提交，或把工具成功当任务验收。
 - 日志标题只用任务名称，稳定 ID 留在注释；`task_id` 在同任务保持不变，`run_id` 每次执行唯一，通过 `project_id` 区分项目。外部编号另存 `external_run_id`，不覆盖 run_id，不使用 SD-PLAN/SD-LOG 分类前缀；更正记录保留追溯。

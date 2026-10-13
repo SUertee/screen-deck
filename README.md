@@ -44,7 +44,7 @@ git switch -c feat/task-editor
 
 小改动可直接留在 dev；并行开发先明确修改范围。主线 PR 无需额外 approval，由 main 保护与 `main-owner-merge-only` 规则限制更新。提交、推送和主线合并是不同操作，AI 按用户本次授权执行。
 
-[`Desktop checks`](.github/workflows/desktop-checks.yml) 在 dev/main 的 push 与 PR 上执行类型检查、单元测试、构建及根记录校验器的临时数据测试。它不验证 Electron 实机界面、真实模型或外部执行，也不自动发布安装包。界面／IPC 改动补相应本地隔离 smoke；PR 使用[模板](.github/pull_request_template.md)。完整规则见 [AGENTS.md](AGENTS.md)，远端限制以实际分支保护与规则集为准。
+[`Desktop checks`](.github/workflows/desktop-checks.yml) 在 macOS runner 上对 dev/main 的 push 与 PR 执行类型检查、单元测试、构建及根记录校验器的临时数据测试。它不验证 Electron 实机界面、真实模型或外部执行，也不自动发布安装包。界面／IPC 改动补相应本地隔离 smoke；PR 使用[模板](.github/pull_request_template.md)。完整规则见 [AGENTS.md](AGENTS.md)，远端限制以实际分支保护与规则集为准。
 
 ## 数据与隐私
 

@@ -1,6 +1,7 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, writeFile, readdir, rm, symlink, rename } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, readdir, rm, symlink, rename, realpath } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { ProjectWorkspaceReader, ProjectReadFailure } from '../../src/projects/index.js';
 import type { ProjectHistory, ProjectIdentity, ProjectRun, ProjectTask } from '../../src/projects/types.js';
@@ -16,7 +17,7 @@ const baseRun: ProjectRun = {
 };
 async function writeJSON(file: string, value: unknown): Promise<void> { await writeFile(file, JSON.stringify(value)); }
 async function fixture(t: TestContext, bound = true) {
-  const temp = await mkdtemp('/private/tmp/screendeck-reader-test-');
+  const temp = await mkdtemp(path.join(await realpath(tmpdir()), 'screendeck-reader-test-'));
   t.after(async () => { await rm(temp, { recursive: true, force: true }); });
   const root = path.join(temp, 'project');
   const privateRoot = path.join(temp, 'private');

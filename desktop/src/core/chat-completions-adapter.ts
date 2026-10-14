@@ -1,7 +1,7 @@
 import { ExecutionError, type ExecutionDriver, type ExecutionEvent, type ExecutionRequest } from './execution-driver.js';
 
 export interface ChatCompletionsOptions {
-  endpoint: string;
+  baseURL: string;
   credential: () => Promise<string | undefined>;
   fetch?: typeof globalThis.fetch;
   timeoutMs?: number;
@@ -26,7 +26,10 @@ export class ChatCompletionsAdapter implements ExecutionDriver {
 
   async execute(request: ExecutionRequest, onEvent: (event: ExecutionEvent) => Promise<void>, signal: AbortSignal): Promise<void> {
     let endpoint: URL;
-    try { endpoint = new URL(this.options.endpoint); }
+    try {
+      endpoint = new URL(this.options.baseURL);
+      endpoint.pathname = `${endpoint.pathname.replace(/\/+$/, '')}/chat/completions`;
+    }
     catch { throw new ExecutionError('configuration', '模型地址无效。', false); }
     if (!['https:', 'http:'].includes(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.hash || endpoint.search ||
       (endpoint.protocol === 'http:' && !['127.0.0.1', 'localhost', '[::1]'].includes(endpoint.hostname))) {

@@ -286,3 +286,43 @@ test('new task and execution record creation enforce the directory capacity befo
     assert.equal(operationCalled, false); await assert.rejects(readFile(join(taskStore.root, `${record.conversation_id}.json`)), { code: 'ENOENT' });
   } finally { await h.manager.shutdown(); }
 });
+
+test('submitted without a remote ID keeps the original binding and finishes without inventing identity', async () => {
+  for (const oldID of [undefined, 'existing-native-message']) {
+    const h = await harness();
+    h.driver.executeTask = async (request, onEvent) => {
+      h.driver.counts.created++;
+      const binding = { runtimeID: 'fixture-runtime', connectionGeneration: 'fixture-generation', externalSessionID: 'fixture-session', ...(oldID ? { externalSubmissionID: oldID } : {}) };
+      await onEvent({ eventID: 'bound', sequence: 1, event: { type: 'bound', binding } });
+      h.driver.counts.submitted++;
+      await onEvent({ eventID: 'submitted', sequence: 2, event: { type: 'submitted' } });
+      await onEvent({ eventID: 'text', sequence: 3, event: { type: 'text-delta', text: 'ACP synthetic answer' } });
+      await onEvent({ eventID: 'settled', sequence: 4, event: { type: 'settled', outcome: 'finished', result: { summary: 'ACP synthetic answer', artifacts: [], evidence: [] } } });
+    };
+    try {
+      const ref = await h.prepare(); await h.start(ref); const turn = await h.wait(ref, ['finished']);
+      assert.equal(turn.execution.external?.externalSubmissionID, oldID);
+      assert.equal(Object.hasOwn(turn.execution.external!, 'externalSubmissionID'), oldID !== undefined);
+      assert.equal(turn.observed_model, undefined);
+      assert.equal((await h.start(ref)).status, 'already-started'); assert.equal(h.driver.counts.submitted, 1);
+      const saved = await h.manager.loadTaskSession(h.sessionRef); validateTaskSession(saved, true);
+    } finally { await h.manager.shutdown(); }
+  }
+});
+
+test('requestable cancellation is sent even without confirmation capability and remains unknown', async () => {
+  const h = await harness(); let cancellations = 0;
+  Object.defineProperty(h.driver, 'taskCapabilities', { value: Object.freeze({ ...h.driver.taskCapabilities, confirmedCancel: false }) });
+  h.driver.cancelExecution = async () => { cancellations++; return { status: 'unknown' }; };
+  h.driver.executeTask = async (_request, onEvent, signal) => {
+    h.driver.counts.created++;
+    await onEvent({ eventID: 'bound', sequence: 1, event: { type: 'bound', binding: { runtimeID: 'fixture-runtime', connectionGeneration: 'fixture-generation', externalSessionID: 'fixture-session' } } });
+    await onEvent({ eventID: 'submitted', sequence: 2, event: { type: 'submitted' } });
+    if (!signal.aborted) await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }));
+  };
+  try {
+    const ref = await h.prepare(); await h.start(ref); await h.wait(ref, ['running']);
+    assert.equal((await h.manager.cancelTaskExecution(ref)).state, 'unknown'); assert.equal(cancellations, 1);
+    assert.equal((await h.start(ref)).status, 'unknown'); assert.equal(h.driver.counts.created, 1);
+  } finally { await h.manager.shutdown(); }
+});

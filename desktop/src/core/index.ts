@@ -10,3 +10,5 @@ export { StorageError } from './private-storage.js';
 export * from './task-execution-driver.js';
 export * from './task-session-history-store.js';
 export * from './fake-task-execution-driver.js';
+export * from './agent-chat-driver.js';
+export * from './agent-session-history-store.js';

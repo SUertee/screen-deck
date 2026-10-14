@@ -160,7 +160,7 @@ export interface AcceptanceRecord {
 }
 export type TaskExecutionEvent =
   | { type: 'bound'; binding: ExternalExecutionBinding }
-  | { type: 'submitted'; externalSubmissionID: string }
+  | { type: 'submitted'; externalSubmissionID?: string }
   | { type: 'text-delta'; text: string }
   | { type: 'observed-model'; model: ModelSelection }
   | { type: 'permission-request'; externalRequestID: string; action: ToolAction }

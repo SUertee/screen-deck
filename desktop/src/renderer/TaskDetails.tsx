@@ -32,12 +32,16 @@ interface DetailProps {
   plans: PreviewPlan[];
   model: ModelSelection | null;
   openReference?: ArtifactReferenceDTO | null;
+  filePreviewOnly?: boolean;
+  onFilesChange?: (hasFiles: boolean) => void;
   onClose: () => void;
   onPreview: (ref: ArtifactReferenceDTO) => Promise<ArtifactPreview>;
   onCreatePlan: (title: string, items: PlanWorkItem[]) => Promise<PreviewPlan>;
   onSavePlan: (plan: PreviewPlan) => Promise<PreviewPlan>;
   onRecommend: (plan: PreviewPlan) => Promise<Array<{ workItemID: string; recommendation: DecisionRecommendation }>>;
   onDiscussWorkItem?: (plan: PreviewPlan, workItemID: string) => void;
+  onRequestWorkItem?: (plan: PreviewPlan, workItemID: string) => void;
+  executionPending?: boolean;
   taskSessions?: TaskSessionRecord[];
   onOpenTaskHistory?: (record: TaskSessionRecord) => void;
 }
@@ -51,11 +55,12 @@ const initialPlanDraft = (task: TaskDTO | null, plans: PreviewPlan[]): PlanDraft
   return { plan, items: plan?.work_items ?? [], suggestions: [], dirty: false };
 };
 
-export function TaskDetails({ open, task, runs, references, plans, model, openReference, onClose, onPreview, onCreatePlan, onSavePlan, onRecommend, onDiscussWorkItem, taskSessions = [], onOpenTaskHistory }: DetailProps) {
+export function TaskDetails({ open, task, runs, references, plans, model, openReference, filePreviewOnly = false, onFilesChange, onClose, onPreview, onCreatePlan, onSavePlan, onRecommend, onDiscussWorkItem, onRequestWorkItem, executionPending, taskSessions = [], onOpenTaskHistory }: DetailProps) {
   const [tab, setTab] = useState<TaskTab>('overview');
-  const [taskContentOpen, setTaskContentOpen] = useState(true);
-  const [containerTab, setContainerTab] = useState('task');
+  const [taskContentOpen, setTaskContentOpen] = useState(!!task || taskSessions.length > 0);
+  const [containerTab, setContainerTab] = useState(task || taskSessions.length ? 'task' : '');
   const [files, setFiles] = useState<OpenFile[]>([]);
+  const [standaloneFile, setStandaloneFile] = useState<OpenFile | null>(null);
   const [editingPlan, setEditingPlan] = useState(false);
   const [planDraft, setPlanDraft] = useState(() => initialPlanDraft(task, plans));
   const [compact, setCompact] = useState(false);
@@ -64,10 +69,14 @@ export function TaskDetails({ open, task, runs, references, plans, model, openRe
   const nextFileRequest = useRef(0);
   const alive = useRef(true);
   useEffect(() => { alive.current = true; return () => { alive.current = false; fileRequests.current.clear(); }; }, []);
+  // App changes the component key only for a different chat context. Hiding the
+  // panel on another page, or receiving a refreshed task, does not reset tabs.
+  useEffect(() => { onFilesChange?.(files.length > 0); }, [files.length, onFilesChange]);
   useEffect(() => {
-    setTab('overview'); setTaskContentOpen(true); setContainerTab('task'); setFiles([]); setEditingPlan(false);
-    setPlanDraft(initialPlanDraft(task, plans)); fileRequests.current.clear();
-  }, [task?.project_id, task?.task_id]);
+    if (open && !filePreviewOnly && !taskContentOpen && !files.length && (task || taskSessions.length)) {
+      setTaskContentOpen(true); setContainerTab('task');
+    }
+  }, [open]); // Only the user's open gesture may restore initially unloaded recovery content.
 
   useEffect(() => {
     const media = matchMedia('(max-width: 960px)');
@@ -115,18 +124,29 @@ export function TaskDetails({ open, task, runs, references, plans, model, openRe
   const taskRefs = references.filter(ref => ref.owner_kind === 'task' && ref.owner_id === task?.task_id);
   const runRefs = references.filter(ref => ref.owner_kind === 'run' && taskRuns.some(run => run.run_id === ref.owner_id));
   const trials = (task ? taskSessions.filter(record => record.scope.project_id === task.project_id && record.scope.task_id === task.task_id) : [...taskSessions]).sort((a, b) => b.updated_at.localeCompare(a.updated_at));
-  const previewRef = async (reference: ArtifactReferenceDTO) => {
+  const externalTrials = trials.some(record => record.turns.some(turn => turn.execution.spec.driver.mode === 'external'));
+  const previewRef = async (reference: ArtifactReferenceDTO, standalone = false) => {
     const id = reference.reference_id; const request = ++nextFileRequest.current;
-    fileRequests.current.set(id, request); setContainerTab(id);
-    setFiles(current => { const next = { reference, preview: null, loading: true, error: '' }; return current.some(file => file.reference.reference_id === id) ? current.map(file => file.reference.reference_id === id ? next : file) : [...current, next]; });
+    const requestKey = `${standalone ? 'preview' : 'context'}:${id}`;
+    fileRequests.current.set(requestKey, request);
+    const next: OpenFile = { reference, preview: null, loading: true, error: '' };
+    if (standalone) setStandaloneFile(next);
+    else { setContainerTab(id); setFiles(current => current.some(file => file.reference.reference_id === id) ? current.map(file => file.reference.reference_id === id ? next : file) : [...current, next]); }
     try {
       const preview = await onPreview(reference);
-      if (alive.current && fileRequests.current.get(id) === request) setFiles(current => current.map(file => file.reference.reference_id === id ? { ...file, preview, loading: false } : file));
+      if (alive.current && fileRequests.current.get(requestKey) === request) {
+        if (standalone) setStandaloneFile(current => current?.reference.reference_id === id ? { ...current, preview, loading: false } : current);
+        else setFiles(current => current.map(file => file.reference.reference_id === id ? { ...file, preview, loading: false } : file));
+      }
     } catch (error) {
-      if (alive.current && fileRequests.current.get(id) === request) setFiles(current => current.map(file => file.reference.reference_id === id ? { ...file, loading: false, error: error instanceof Error ? error.message : '文件无法读取，请重新读取。' } : file));
+      if (alive.current && fileRequests.current.get(requestKey) === request) {
+        const message = error instanceof Error ? error.message : '文件无法读取，请重新读取。';
+        if (standalone) setStandaloneFile(current => current?.reference.reference_id === id ? { ...current, loading: false, error: message } : current);
+        else setFiles(current => current.map(file => file.reference.reference_id === id ? { ...file, loading: false, error: message } : file));
+      }
     }
   };
-  useEffect(() => { if (openReference) void previewRef(openReference); }, [openReference]);
+  useEffect(() => { if (openReference) void previewRef(openReference, filePreviewOnly); }, [openReference, filePreviewOnly]);
   const focusRemainingContent = () => {
     if (!panel.current?.contains(document.activeElement)) return;
     requestAnimationFrame(() => {
@@ -136,27 +156,30 @@ export function TaskDetails({ open, task, runs, references, plans, model, openRe
     });
   };
   const closeFile = (id: string) => {
+    if (!taskContentOpen && files.length === 1) { onClose(); return; }
     focusRemainingContent();
-    fileRequests.current.delete(id);
+    fileRequests.current.delete(`context:${id}`);
     const remaining = files.filter(file => file.reference.reference_id !== id); setFiles(remaining);
     if (containerTab === id) setContainerTab(taskContentOpen ? 'task' : remaining.at(-1)?.reference.reference_id ?? '');
   };
-  const closeTaskContent = () => { focusRemainingContent(); setTaskContentOpen(false); if (containerTab === 'task') setContainerTab(files.at(-1)?.reference.reference_id ?? ''); };
+  const closeTaskContent = () => { if (!files.length) { onClose(); return; } focusRemainingContent(); setTaskContentOpen(false); if (containerTab === 'task') setContainerTab(files.at(-1)?.reference.reference_id ?? ''); };
   const showTask = () => { setTaskContentOpen(true); setContainerTab('task'); };
   const moveTo = (next: TaskTab) => { setTab(next); showTask(); };
   const refLink = (ref: ArtifactReferenceDTO) => <button key={ref.reference_id} className="task-material" onClick={() => void previewRef(ref)}><FileText size={14} /><span>{ref.label}</span></button>;
   const compactRefs = (refs: ArtifactReferenceDTO[]) => <div className="task-materials">{refs.slice(0, 2).map(refLink)}{refs.length > 2 && <details className="collapsed-materials"><summary>其余 {refs.length - 2} 项材料</summary>{refs.slice(2).map(refLink)}</details>}</div>;
   const stepLink = (label: string, next: TaskTab) => <button className="task-section-link" onClick={() => moveTo(next)}>{label}<ArrowRight size={13} /></button>;
+  const visibleFiles = filePreviewOnly ? standaloneFile ? [standaloneFile] : [] : files;
+  const renderFile = (file: OpenFile, standalone = false) => <div className="task-panel-body" key={`${standalone ? 'preview' : 'context'}:${file.reference.reference_id}`} hidden={standalone ? !filePreviewOnly : filePreviewOnly || containerTab !== file.reference.reference_id}><div className="file-header"><FileText size={15} /><span>{file.reference.label}</span></div><div className="file-content">{file.loading ? <div className="loading-lines" aria-label="正在读取文件"><div /><div /><div /></div> : file.error ? <Notice>{file.error}<button className="button small" onClick={() => void previewRef(file.reference, standalone)}>重新读取</button></Notice> : file.preview?.type === 'text' ? <pre>{file.preview.text}</pre> : file.preview?.type === 'image' && /^image\/(png|jpeg|gif|webp)$/.test(file.preview.mime_type) ? <img alt={file.preview.label} src={`data:${file.preview.mime_type};base64,${file.preview.base64}`} /> : <Empty title="暂不支持这种文件预览">当前可预览纯文本和常见图片。</Empty>}</div></div>;
 
   return <>
     <button className="detail-scrim task-panel-scrim" hidden={!open} aria-label="关闭任务详情" onClick={onClose} />
-    <aside className="detail-panel task-panel" ref={panel} hidden={!open} aria-label="任务详情和文件预览" role={compact && open ? 'dialog' : undefined} aria-modal={compact && open ? true : undefined} tabIndex={-1} onKeyDown={event => { if (event.key === 'Escape' && !event.nativeEvent.isComposing) { event.stopPropagation(); onClose(); } }}>
+    <aside id="task-context-panel" className={`detail-panel task-panel${filePreviewOnly ? ' file-preview-panel' : ''}`} ref={panel} hidden={!open} aria-label={filePreviewOnly ? '项目文件预览' : '任务详情和文件预览'} role={compact && open ? 'dialog' : undefined} aria-modal={compact && open ? true : undefined} tabIndex={-1} onKeyDown={event => { if (event.key === 'Escape' && !event.nativeEvent.isComposing) { event.stopPropagation(); onClose(); } }}>
       <div className="panel-tabs task-content-tabs" role="tablist" aria-label="上下文面板">
-        {taskContentOpen && <div className="task-content-tab"><button role="tab" aria-selected={containerTab === 'task'} className={`panel-tab ${containerTab === 'task' ? 'active' : ''}`} onClick={showTask}><FileText size={14} />任务详情</button><button className="icon-button task-content-close" aria-label="关闭任务详情内容" onClick={closeTaskContent}><X size={13} /></button></div>}
-        {files.map(file => <div className="task-content-tab" key={file.reference.reference_id}><button role="tab" aria-selected={containerTab === file.reference.reference_id} className={`panel-tab ${containerTab === file.reference.reference_id ? 'active' : ''}`} onClick={() => setContainerTab(file.reference.reference_id)} title={file.reference.label}><File size={14} /><span>{file.reference.label}</span></button><button className="icon-button task-content-close" aria-label={`关闭文件预览：${file.reference.label}`} onClick={() => closeFile(file.reference.reference_id)}><X size={13} /></button></div>)}
-        {!taskContentOpen && <button className="icon-button task-reopen-content" aria-label="打开任务详情内容" onClick={showTask}><Plus size={15} /></button>}
+        {!filePreviewOnly && taskContentOpen && <div className="task-content-tab"><button role="tab" aria-selected={containerTab === 'task'} className={`panel-tab ${containerTab === 'task' ? 'active' : ''}`} onClick={showTask}><FileText size={14} />任务详情</button><button className="icon-button task-content-close" aria-label="关闭任务详情内容" onClick={closeTaskContent}><X size={13} /></button></div>}
+        {visibleFiles.map(file => <div className="task-content-tab" key={file.reference.reference_id}><button role="tab" aria-selected={filePreviewOnly || containerTab === file.reference.reference_id} className={`panel-tab ${filePreviewOnly || containerTab === file.reference.reference_id ? 'active' : ''}`} onClick={() => { if (!filePreviewOnly) setContainerTab(file.reference.reference_id); }} title={file.reference.label}><File size={14} /><span>{file.reference.label}</span></button><button className="icon-button task-content-close" aria-label={`关闭文件预览：${file.reference.label}`} onClick={() => filePreviewOnly ? onClose() : closeFile(file.reference.reference_id)}><X size={13} /></button></div>)}
+        {!filePreviewOnly && !taskContentOpen && (task || trials.length > 0) && <button className="icon-button task-reopen-content" aria-label="打开任务详情内容" onClick={showTask}><Plus size={15} /></button>}
       </div>
-      <div className="task-panel-body" hidden={!taskContentOpen || containerTab !== 'task'}>
+      <div className="task-panel-body" hidden={filePreviewOnly || !taskContentOpen || containerTab !== 'task'}>
         {task ? <>
           <header className="detail-heading"><h1>{task.title}</h1><div className="detail-meta"><span>{taskStateLabel(task.status)}</span><span>更新于 {formatDate(task.updated_at)}</span></div></header>
           <div className="detail-tabs" role="tablist" aria-label="任务内容">{([['overview', '概览'], ['division', '分工'], ['timeline', '时间线'], ['delivery', '交付']] as const).map(([id, label]) => <button key={id} className={`detail-tab ${tab === id ? 'active' : ''}`} role="tab" aria-selected={tab === id} onClick={() => setTab(id)}>{label}</button>)}</div>
@@ -169,20 +192,20 @@ export function TaskDetails({ open, task, runs, references, plans, model, openRe
             </div>
             <div hidden={tab !== 'division'}>
               <div className="task-section-heading"><div><h2>工作项</h2><p className="field-help">独立预览计划{planDraft.plan ? ` · v${planDraft.plan.version}` : ''}{planDraft.dirty ? ' · 尚未保存' : ''}</p></div><button className="button small ghost task-edit-plan" aria-expanded={editingPlan} onClick={() => setEditingPlan(value => !value)}>{editingPlan ? '收起编辑' : '编辑计划'}</button></div>
-              <div className="task-work-items" data-testid="task-work-items" hidden={editingPlan}>{planDraft.items.length ? planDraft.items.map((item, index) => <article className="task-work-item" key={item.id}><span className="task-work-number">{index + 1}</span><div><h3>{item.title || '尚未填写的工作项'}</h3><p>{item.expected_result || '尚未填写预期结果'}</p><div className="task-work-meta"><span>{item.assignee === 'human' ? '由你处理' : item.assignee === 'chat' ? '模型讨论' : '待分工'}</span>{item.dependencies.length > 0 && <span>{item.dependencies.length} 项依赖</span>}</div>{planDraft.plan && onDiscussWorkItem && <button className="task-section-link" disabled={planDraft.dirty || pendingPlans.has(`${task.project_id}:${task.task_id}`) || !planDraft.plan.work_items.some(saved => saved.id === item.id)} onClick={() => onDiscussWorkItem(planDraft.plan!, item.id)}>讨论这一步<ArrowRight size={13} /></button>}</div></article>) : <p className="quiet-text">还没有预览工作项。可编辑计划，记录下一步。</p>}</div>
+              <div className="task-work-items" data-testid="task-work-items" hidden={editingPlan}>{planDraft.items.length ? planDraft.items.map((item, index) => <article className="task-work-item" key={item.id}><span className="task-work-number">{index + 1}</span><div><h3>{item.title || '尚未填写的工作项'}</h3><p>{item.expected_result || '尚未填写预期结果'}</p><div className="task-work-meta"><span>{item.assignee === 'human' ? '由你处理' : item.assignee === 'chat' ? '模型讨论' : '待分工'}</span>{item.dependencies.length > 0 && <span>{item.dependencies.length} 项依赖</span>}</div>{planDraft.plan && onDiscussWorkItem && <button className="task-section-link" disabled={planDraft.dirty || pendingPlans.has(`${task.project_id}:${task.task_id}`) || !planDraft.plan.work_items.some(saved => saved.id === item.id)} onClick={() => onDiscussWorkItem(planDraft.plan!, item.id)}>讨论这一步<ArrowRight size={13} /></button>}{planDraft.plan && onRequestWorkItem && item.kind === 'discussion' && item.assignee === 'unassigned' && <button className="task-section-link" disabled={executionPending || planDraft.dirty || pendingPlans.has(`${task.project_id}:${task.task_id}`) || !planDraft.plan.work_items.some(saved => saved.id === item.id)} onClick={() => onRequestWorkItem(planDraft.plan!, item.id)}>{executionPending ? '正在准备…' : '用 OpenCode 讨论'}<ArrowRight size={13} /></button>}</div></article>) : <p className="quiet-text">还没有预览工作项。可编辑计划，记录下一步。</p>}</div>
               <div hidden={!editingPlan} className="task-plan-editor"><PlanEditor key={`${task.project_id}:${task.task_id}`} task={task} plans={plans} model={model} onCreate={onCreatePlan} onSave={onSavePlan} onRecommend={onRecommend} onDraftChange={setPlanDraft} /></div>
               <p className="field-help task-plan-boundary">讨论这一步只准备聊天输入；不调用模型或启动执行。计划编辑不回写原任务。</p>
             </div>
             <div hidden={tab !== 'timeline'}>
               {taskRuns.length ? taskRuns.map(run => <TimelineRow key={run.run_id} title={run.status === 'completed' ? '执行已结束' : run.status === 'failed' ? '执行失败' : run.status === 'interrupted' ? '执行中断' : '历史运行记录'} date={run.started_at} state={<span className="task-status">只读</span>}><StoredSummary text={run.summary} /><details open={run.status === 'failed'}><summary>查看记录细节 <ChevronDown size={11} /></summary><p>Agent：{run.executor.agent || '未记录'}<br />模型：{run.executor.model || '未记录'}<br />结束时间：{formatDate(run.ended_at)}<br />补录时间：{formatDate(run.recorded_at)}</p><pre>{run.run_id}</pre></details>{compactRefs(references.filter(ref => ref.owner_kind === 'run' && ref.owner_id === run.run_id))}</TimelineRow>) : <p className="quiet-text">原任务没有保存的执行时间线。</p>}
-              {trials.length > 0 && <section className="detail-section task-trial-history" data-testid="task-trial-history"><h2>预览试运行记录</h2><p className="field-help">仅保留之前的模拟事实，不代表真实工具执行或原任务进度。</p>{trials.map(record => <div className="task-trial-row" key={record.conversation_id}><div><strong>{record.title}</strong><time>{formatDate(record.updated_at)}</time></div>{onOpenTaskHistory && <button className="button small ghost" aria-label={`查看试运行记录：${record.title}`} onClick={() => onOpenTaskHistory(record)}>查看记录<ArrowRight size={13} /></button>}</div>)}</section>}
+              {trials.length > 0 && <section className="detail-section task-trial-history" data-testid="task-trial-history"><h2>{externalTrials ? '执行记录' : '预览试运行记录'}</h2><p className="field-help">{externalTrials ? '按来源查看执行事实；文本结束不代表工具执行或原任务完成。' : '仅保留之前的模拟事实，不代表真实工具执行或原任务进度。'}</p>{trials.map(record => <div className="task-trial-row" key={record.conversation_id}><div><strong>{record.title}</strong><time>{formatDate(record.updated_at)}</time></div>{onOpenTaskHistory && <button className="button small ghost" aria-label={`查看试运行记录：${record.title}`} onClick={() => onOpenTaskHistory(record)}>查看记录<ArrowRight size={13} /></button>}</div>)}</section>}
             </div>
             <div hidden={tab !== 'delivery'}><section className="detail-section"><h2>交付材料</h2>{runRefs.length ? <div className="task-materials">{runRefs.map(refLink)}</div> : <p>执行记录中没有关联交付材料。</p>}<p className="field-help">文件被关联不等于验收通过，以下仅展示原始记录。</p></section>{task.acceptance.length > 0 && <section className="detail-section"><h2>验证记录</h2>{task.acceptance.slice(0, 3).map(item => <p key={item.id}>{item.verification === 'verified' ? '✓ 已验证' : item.verification === 'failed' ? '验证失败' : '未检查'} · {item.description}</p>)}{task.acceptance.length > 3 && <details><summary className="quiet-text">其余 {task.acceptance.length - 3} 项</summary>{task.acceptance.slice(3).map(item => <p key={item.id}>{item.verification === 'verified' ? '已验证' : item.verification === 'failed' ? '验证失败' : '未检查'} · {item.description}</p>)}</details>}</section>}</div>
           </div>
-        </> : <div className="detail-scroll task-recovery-scroll"><Empty icon={<FileText size={24} />} title="选择一项任务">从左侧选择任务，在这里查看目标、分工与记录。</Empty>{trials.length > 0 && <section className="detail-section task-trial-history" data-testid="task-trial-history"><h2>已保存的试运行记录</h2><p className="field-help">原任务暂不可读，仍可查看已保存的试运行事实。</p>{trials.map(record => <div className="task-trial-row" key={record.conversation_id}><div><strong>{record.title}</strong><p className="task-recovery-scope">任务：{record.scope.task_id}<br />项目：{record.scope.project_id}</p><time>{formatDate(record.updated_at)}</time></div>{onOpenTaskHistory && <button className="button small ghost" aria-label={`查看试运行记录：${record.title}`} onClick={() => onOpenTaskHistory(record)}>查看记录<ArrowRight size={13} /></button>}</div>)}</section>}</div>}
+        </> : <div className="detail-scroll task-recovery-scroll">{!trials.length && <Empty icon={<FileText size={24} />} title="选择一项任务">从左侧选择任务，在这里查看目标、分工与记录。</Empty>}{trials.length > 0 && <section className="detail-section task-trial-history" data-testid="task-trial-history"><h2>{externalTrials ? '已保存的执行记录' : '已保存的试运行记录'}</h2><p className="field-help">原任务暂不可读，仍可查看已保存的执行事实。</p>{trials.map(record => <div className="task-trial-row" key={record.conversation_id}><div><strong>{record.title}</strong><p className="task-recovery-scope">任务：{record.scope.task_id}<br />项目：{record.scope.project_id}</p><time>{formatDate(record.updated_at)}</time></div>{onOpenTaskHistory && <button className="button small ghost" aria-label={`查看试运行记录：${record.title}`} onClick={() => onOpenTaskHistory(record)}>查看记录<ArrowRight size={13} /></button>}</div>)}</section>}</div>}
       </div>
-      {files.map(file => <div className="task-panel-body" key={file.reference.reference_id} hidden={containerTab !== file.reference.reference_id}><div className="file-header"><FileText size={15} /><span>{file.reference.label}</span></div><div className="file-content">{file.loading ? <div className="loading-lines" aria-label="正在读取文件"><div /><div /><div /></div> : file.error ? <Notice>{file.error}<button className="button small" onClick={() => void previewRef(file.reference)}>重新读取</button></Notice> : file.preview?.type === 'text' ? <pre>{file.preview.text}</pre> : file.preview?.type === 'image' && /^image\/(png|jpeg|gif|webp)$/.test(file.preview.mime_type) ? <img alt={file.preview.label} src={`data:${file.preview.mime_type};base64,${file.preview.base64}`} /> : <Empty title="暂不支持这种文件预览">当前可预览纯文本和常见图片。</Empty>}</div></div>)}
-      {!containerTab && <Empty icon={<FileText size={22} />} title="右栏内容已关闭">关闭内容不删除任务或文件。<button className="button small" onClick={showTask}>打开任务详情</button></Empty>}
+      {files.map(file => renderFile(file))}
+      {standaloneFile && renderFile(standaloneFile, true)}
     </aside>
   </>;
 }

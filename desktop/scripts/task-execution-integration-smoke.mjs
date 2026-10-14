@@ -16,7 +16,7 @@ for (const folder of [path.join(root, '.screendeck'), ...['tasks', 'runs', 'arti
 const source = [[path.join(root, '.screendeck', 'project.json'), identity], [path.join(namespace, 'history.json'), history], [path.join(namespace, 'tasks', `${taskID}.json`), task]];
 for (const [filename, value] of source) await writeFile(filename, JSON.stringify(value));
 const sourceHashes = await Promise.all(source.map(async ([filename]) => [filename, createHash('sha256').update(await readFile(filename)).digest('hex')]));
-const launchEnv = { ...process.env, SCREENDECK_PREVIEW_ROOT: previewRoot, SCREENDECK_PROJECT_HISTORY_ROOT: privateRoot, SCREENDECK_INITIAL_PROJECT: root };
+const launchEnv = { ...process.env, SCREENDECK_TEST_TASK_EXECUTION: 'simulation', SCREENDECK_PREVIEW_ROOT: previewRoot, SCREENDECK_PROJECT_HISTORY_ROOT: privateRoot, SCREENDECK_INITIAL_PROJECT: root };
 delete launchEnv.ELECTRON_RUN_AS_NODE; delete launchEnv.SCREENDECK_PROVIDER_SCREENSHOT; delete launchEnv.SCREENDECK_OCR_HELPER;
 let application;
 const launch = () => electron.launch({ args: [process.cwd()], env: launchEnv, timeout: 30_000 });

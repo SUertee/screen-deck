@@ -29,6 +29,7 @@ export interface TaskExecutionConfiguration {
   approvals: ApprovalService;
   resolveWorkspace: (scope: PreviewPlanScope, workspaceID: string) => Promise<{ workspace: WorkspaceRef; root: string }>;
   driverRef: (driverID: string) => DriverRef;
+  validateSelection?: (driver: DriverRef, model: ModelSelection) => void;
   resolveMaterials: (scope: PreviewPlanScope, ids: string[]) => Promise<Array<{ reference: MaterialRef; bytes: Uint8Array }>>;
   checkWorkspaceBinding?: (scope: PreviewPlanScope, workspace: WorkspaceRef) => void;
   verifyResult: (turn: TaskTurnRecord, result: ExecutionResult, ref: TaskTurnRef) => Promise<void>;
@@ -150,7 +151,7 @@ export class TaskOrchestrator {
       await this.assertTaskIdle(scope, existing ? refOf(session, existing) : undefined);
       const workspace = await this.config().resolveWorkspace(scope, input.workspaceID);
       const driver = this.config().driverRef(input.driverID);
-      if (driver.mode !== 'simulation') throw new StorageError('unsupported', '当前仅支持模拟任务执行。');
+      this.selection(driver, input.model, input.tools, input.materialIDs);
       const materials = await this.materials(scope, input.materialIDs);
       const dependencies = await this.dependencies(plan, item.dependencies);
       const spec: ExecutionSpec = { work: { planID: plan.id, planVersion: plan.version, workItemID: item.id }, title: item.title, kind: item.kind, expectedResult: item.expected_result, dependencies, inputMessageID: existing?.execution.spec.inputMessageID ?? randomUUID(), materials: materials.map(value => value.reference), workspace: workspace.workspace, driver, tools: structuredClone(input.tools) };
@@ -217,6 +218,7 @@ export class TaskOrchestrator {
         this.config().approvals.assertCurrent(approval, target, this.now());
         this.config().checkWorkspaceBinding?.(scope, turn.execution.spec.workspace);
         if (!same(this.config().driverRef(turn.execution.spec.driver.driverID), turn.execution.spec.driver)) throw new StorageError('conflict', '执行器配置已变化，请重新申请。');
+        this.selection(turn.execution.spec.driver, turn.requested_model, turn.execution.spec.tools, turn.execution.spec.materials.map(value => value.referenceID));
       }, resolved });
     });
   }
@@ -277,8 +279,8 @@ export class TaskOrchestrator {
     validateTaskTurnRef(ref); const session = await this.session(ref.session);
     return this.taskGate(scopeOf(session), async () => {
       // Query persisted facts even when current project material access is unavailable.
-      const turn = await this.reviewable(ref, false);
-      const resultDigest = taskResultDigest(turn); const acceptance = await this.acceptance.find(ref, resultDigest);
+      const { turn, resultDigest } = await this.reviewable(ref, false);
+      const acceptance = await this.acceptance.find(ref, resultDigest);
       return { turn: ref, resultDigest, result: structuredClone(turn.execution.result!), ...(acceptance ? { acceptance } : {}) };
     });
   }
@@ -288,8 +290,8 @@ export class TaskOrchestrator {
     if (typeof input.resultDigest !== 'string' || !/^[a-f0-9]{64}$/.test(input.resultDigest) || !['accept', 'reject'].includes(input.choice) || input.comment !== undefined && !boundedString(input.comment, 4096)) throw new StorageError('invalid-input', '验收输入无效。');
     const session = await this.session(input.turn.session);
     return this.taskGate(scopeOf(session), async () => {
-      const turn = await this.reviewable(input.turn);
-      if (taskResultDigest(turn) !== input.resultDigest) throw new StorageError('conflict', '成果摘要已变化，请重新读取原成果。');
+      const { resultDigest } = await this.reviewable(input.turn);
+      if (resultDigest !== input.resultDigest) throw new StorageError('conflict', '成果摘要已变化，请重新读取原成果。');
       return this.acceptance.record({ turn: input.turn, resultDigest: input.resultDigest, decision: input.choice === 'accept' ? 'accepted' : 'rejected', actor: this.actor(), now: this.now(), ...(input.comment === undefined ? {} : { comment: input.comment }) });
     });
   }
@@ -297,6 +299,13 @@ export class TaskOrchestrator {
   private config(): TaskExecutionConfiguration { if (!this.execution) throw new StorageError('unsupported', '任务执行尚未配置。'); return this.execution; }
   private now(): Date { return this.config().now?.() ?? new Date(); }
   private actor(): string { return this.config().actor?.() ?? 'local-user'; }
+  private selection(driver: DriverRef, model: ModelSelection, tools: ExecutionSpec['tools'], materialIDs: string[]): void {
+    const validate = this.config().validateSelection;
+    if (!validate && driver.mode !== 'simulation') throw new StorageError('unsupported', '外部执行器尚未注册。');
+    if (!validate && (model.provider_id !== 'simulation' || model.model_id !== 'simulation-v1' || model.variant !== undefined)) throw new StorageError('unsupported', '模拟执行仅支持明确标注的模拟模型。');
+    if (driver.mode === 'external' && (tools.kind !== 'none' || materialIDs.length)) throw new StorageError('unsupported', '首版外部执行仅支持本次输入和无工具范围。');
+    validate?.(driver, model);
+  }
   private async session(ref: TaskSessionRef): Promise<TaskSessionRecord> {
     const value = exactObject(ref, ['format', 'sessionID']);
     if (value.format !== 'task-v2' || !isUUID(value.sessionID)) throw new StorageError('invalid-input', '任务会话引用无效。');
@@ -304,6 +313,11 @@ export class TaskOrchestrator {
     if (!session) throw new StorageError('missing-session', '任务会话不存在。'); validatePreviewPlanScope(scopeOf(session)); return session;
   }
   private async turn(ref: TaskTurnRef): Promise<TaskTurnRecord> { validateTaskTurnRef(ref); const turn = await this.config().manager.getTaskTurn(ref); if (!turn) throw new StorageError('missing-turn', '任务轮次不存在。'); return turn; }
+  private snapshotTurn(ref: TaskTurnRef, session: TaskSessionRecord): TaskTurnRecord {
+    const turns = session.turns.filter(turn => turn.turn_id === ref.turnID);
+    if (session.conversation_id !== ref.session.sessionID || turns.length !== 1) throw new StorageError('conflict', '成果轮次不属于唯一的原会话快照。');
+    return turns[0]!;
+  }
   private async scan(scope: PreviewPlanScope): Promise<TaskSessionRecord[]> {
     const listing = await this.config().manager.listTaskSessions({ projectID: scope.project_id, taskID: scope.task_id });
     if (listing.diagnostics.length) throw new StorageError('conflict', '任务会话记录未完整核对，不能启动或修改计划。');
@@ -335,10 +349,10 @@ export class TaskOrchestrator {
       let accepted: AcceptanceRecord | undefined;
       for (const candidate of records.filter(record => record.decision === 'accepted').sort((a, b) => b.decided_at.localeCompare(a.decided_at) || a.id.localeCompare(b.id))) {
         const session = await this.session(candidate.turn.session); if (!same(scopeOf(session), plan.scope)) continue;
-        const turn = await this.turn(candidate.turn);
+        const turn = this.snapshotTurn(candidate.turn, session);
         if (turn.execution.spec.work.planID !== plan.id || turn.execution.spec.work.planVersion !== plan.version || turn.execution.spec.work.workItemID !== workItemID) continue;
-        await this.reviewable(candidate.turn);
-        if (taskResultDigest(turn) !== candidate.resultDigest) throw new StorageError('conflict', '依赖成果的验收摘要已变化。');
+        const review = await this.reviewable(candidate.turn);
+        if (!same(scopeOf(review.session), plan.scope) || review.turn.execution.spec.work.planID !== plan.id || review.turn.execution.spec.work.planVersion !== plan.version || review.turn.execution.spec.work.workItemID !== workItemID || review.resultDigest !== candidate.resultDigest) throw new StorageError('conflict', '依赖成果的验收摘要已变化。');
         accepted = candidate; break;
       }
       if (!accepted) throw new StorageError('not-approved', '依赖工作项尚无当前计划版本的人工验收证据。');
@@ -348,12 +362,13 @@ export class TaskOrchestrator {
   }
   private async frozenCurrent(ref: TaskTurnRef, turn: TaskTurnRecord, scope: PreviewPlanScope): Promise<{ workspaceRoot: string; materials: Array<{ reference: MaterialRef; bytes: Uint8Array }> }> {
     const spec = turn.execution.spec; const plan = await this.currentPlan(spec.work.planID, spec.work.planVersion, scope); const item = this.executableItem(plan, spec.work.workItemID);
+    this.selection(spec.driver, turn.requested_model, spec.tools, spec.materials.map(value => value.referenceID));
     if (spec.title !== item.title || spec.kind !== item.kind || spec.expectedResult !== item.expected_result || !same(spec.dependencies.map(value => value.workItemID), item.dependencies)) throw new StorageError('conflict', '冻结的工作项范围与当前计划不符。');
     for (const dependency of spec.dependencies) {
       const record = await this.acceptance.load(dependency.acceptanceID);
       if (!record || record.decision !== 'accepted') throw new StorageError('not-approved', '依赖验收不存在或未通过。');
-      const dependencySession = await this.session(record.turn.session); const dependencyTurn = await this.reviewable(record.turn);
-      if (!same(scopeOf(dependencySession), scope) || !same(dependencyTurn.execution.spec.work, { planID: plan.id, planVersion: plan.version, workItemID: dependency.workItemID }) || taskResultDigest(dependencyTurn) !== record.resultDigest) throw new StorageError('conflict', '依赖验收不属于本计划版本。');
+      const reviewed = await this.reviewable(record.turn);
+      if (!same(scopeOf(reviewed.session), scope) || !same(reviewed.turn.execution.spec.work, { planID: plan.id, planVersion: plan.version, workItemID: dependency.workItemID }) || reviewed.resultDigest !== record.resultDigest) throw new StorageError('conflict', '依赖验收不属于本计划版本。');
     }
     const workspace = await this.config().resolveWorkspace(scope, spec.workspace.workspaceID);
     const materials = await this.materials(scope, spec.materials.map(value => value.referenceID));
@@ -367,10 +382,12 @@ export class TaskOrchestrator {
     const permission = turn.execution.permissions.find(value => value.externalRequestID === target.externalRequestID);
     if (!permission || permission.actionDigest !== target.actionDigest) throw new StorageError('conflict', '工具许可目标或动作摘要已改变。'); return permission;
   }
-  private async reviewable(ref: TaskTurnRef, verify = true): Promise<TaskTurnRecord> {
-    const turn = await this.turn(ref);
+  private async reviewable(ref: TaskTurnRef, verify = true): Promise<{ session: TaskSessionRecord; turn: TaskTurnRecord; resultDigest: string }> {
+    const session = await this.session(ref.session); const turn = this.snapshotTurn(ref, session);
     if (turn.state !== 'finished' || !turn.execution.result || this.config().manager.hasTaskPendingWrites(ref.session.sessionID) || unresolvedPermission(turn)) throw new StorageError('conflict', '仅可验收已持久化、已核对许可的 finished 成果。');
-    if (verify) await this.config().verifyResult(turn, turn.execution.result, ref); return turn;
+    const resultDigest = taskResultDigest(turn, session);
+    if (verify) await this.config().verifyResult(turn, turn.execution.result, ref);
+    return { session, turn, resultDigest };
   }
   private async closeExpiredPreparations(scope: PreviewPlanScope): Promise<void> {
     for (const session of await this.scan(scope)) for (const turn of session.turns) {

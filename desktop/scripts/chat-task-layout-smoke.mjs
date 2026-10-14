@@ -54,8 +54,9 @@ const sourceFiles = [
 ];
 for (const [filename, text] of sourceFiles) await writeFile(filename, text);
 const sourceHashes = await Promise.all(sourceFiles.map(async ([filename]) => [filename, createHash('sha256').update(await readFile(filename)).digest('hex')]));
-const launchEnv = { ...process.env, SCREENDECK_PREVIEW_ROOT: previewRoot, SCREENDECK_PROJECT_HISTORY_ROOT: privateRoot, SCREENDECK_INITIAL_PROJECT: projectRoot };
-for (const name of ['ELECTRON_RUN_AS_NODE', 'SCREENDECK_APP_EXECUTABLE', 'SCREENDECK_PROVIDER_SCREENSHOT', 'SCREENDECK_OCR_HELPER', 'SCREENDECK_LIVE_SMOKE']) delete launchEnv[name];
+const launchEnv = {};
+for (const name of ['PATH', 'TMPDIR', 'TEMP', 'TMP', 'LANG', 'LC_ALL', 'SHELL', 'USER', 'LOGNAME', 'DISPLAY', 'WAYLAND_DISPLAY', 'XAUTHORITY', 'XDG_RUNTIME_DIR', 'SystemRoot', 'WINDIR']) if (process.env[name] !== undefined) launchEnv[name] = process.env[name];
+Object.assign(launchEnv, { SCREENDECK_TEST_TASK_EXECUTION: 'simulation', SCREENDECK_PREVIEW_ROOT: previewRoot, SCREENDECK_PROJECT_HISTORY_ROOT: privateRoot, SCREENDECK_INITIAL_PROJECT: projectRoot });
 
 const checks = [];
 const screenshots = [];
@@ -170,13 +171,11 @@ try {
   await expect(page.getByRole('heading', { name: '今天想推进什么？' })).toBeVisible();
   await resize(1440, 940);
 
-  await check('empty-chat-has-normal-composer-and-context-toggle', async () => {
+  await check('empty-chat-has-normal-composer-and-no-empty-context-panel', async () => {
     await assertChatFrame();
-    await expect(page.getByRole('button', { name: '展开右栏', exact: true })).toBeEnabled();
-    await setPanelOpen(true);
-    await expect(panel().getByText('选择一项任务', { exact: true })).toBeVisible();
-    await expect(panel().locator('[data-testid="task-work-items"], [data-testid="task-trial-history"]')).toHaveCount(0);
-    await setPanelOpen(false);
+    await expect(page.getByRole('button', { name: '展开右栏', exact: true })).toHaveCount(0);
+    await expect(panel()).toBeHidden();
+    assert.equal(await page.locator('.workbench').evaluate(node => node.classList.contains('has-detail')), false);
   });
   await check('separate-mode-simulation-group-and-request-form-removed', async () => {
     await expect(page.locator('.task-execution-chat, .execution-request, .task-execution-mode, .chat-mode-switch')).toHaveCount(0);
@@ -242,6 +241,43 @@ try {
     await expect(page.getByRole('tab', { name: '布局验收材料.md', exact: true })).toHaveAttribute('aria-selected', 'true');
     await expect(panel().locator('.file-content pre')).toContainText('第 100 行');
     await expect.poll(() => panel().locator('.file-content').evaluate(node => node.scrollTop)).toBe(position);
+  });
+  await check('closing-last-task-tab-collapses-panel-and-toggle-restores-draft', async () => {
+    await page.getByRole('button', { name: '关闭文件预览：布局验收材料.md', exact: true }).click();
+    await page.getByRole('tab', { name: '任务详情', exact: true }).click();
+    await page.getByRole('tab', { name: '分工', exact: true }).click();
+    const field = page.getByRole('textbox', { name: '工作项 1 内容', exact: true });
+    await expect(field).toHaveValue('尚未保存的任务目标修改');
+    const position = await panel().locator('.detail-scroll').evaluate(node => { node.scrollTop = 140; return node.scrollTop; });
+    assert.ok(position > 0);
+    await page.getByRole('button', { name: '关闭任务详情内容', exact: true }).click();
+    await expect(panel()).toBeHidden();
+    assert.equal(await page.locator('.workbench').evaluate(node => node.classList.contains('has-detail')), false);
+    await assertChatFrame({ ordinary: true });
+    await setPanelOpen(true);
+    await expect(page.getByRole('tab', { name: '任务详情', exact: true })).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByRole('tab', { name: '分工', exact: true })).toHaveAttribute('aria-selected', 'true');
+    await expect(field).toHaveValue('尚未保存的任务目标修改');
+    await expect.poll(() => panel().locator('.detail-scroll').evaluate(node => node.scrollTop)).toBe(position);
+  });
+  await check('tasks-and-timeline-navigation-retains-original-chat-context-and-unsaved-plan', async () => {
+    const draft = await input().inputValue();
+    const position = await panel().locator('.detail-scroll').evaluate(node => { node.scrollTop = 160; return node.scrollTop; });
+    const before = await page.evaluate(() => window.screendeck.bootstrap());
+    for (const name of ['任务', '时间线']) {
+      await page.getByRole('button', { name, exact: true }).click();
+      await expect(page.getByRole('heading', { name, exact: true })).toBeVisible();
+      await expect(panel()).toBeHidden();
+      assert.equal(await page.locator('.workbench').evaluate(node => node.classList.contains('has-detail')), false);
+      await page.locator('.session-button').filter({ hasText: ordinarySession.title }).click();
+      await setPanelOpen(true);
+      await assertChatFrame({ ordinary: true }); await expect(input()).toHaveValue(draft);
+      await expect(page.getByRole('tab', { name: '分工', exact: true })).toHaveAttribute('aria-selected', 'true');
+      await expect(page.getByRole('textbox', { name: '工作项 1 内容', exact: true })).toHaveValue('尚未保存的任务目标修改');
+      await expect.poll(() => panel().locator('.detail-scroll').evaluate(node => node.scrollTop)).toBe(position);
+    }
+    const after = await page.evaluate(() => window.screendeck.bootstrap());
+    assert.deepEqual(after.plans, before.plans); assert.deepEqual(after.sessions, before.sessions); assert.deepEqual(after.taskSessions, before.taskSessions);
   });
   await page.getByRole('tab', { name: '任务详情', exact: true }).click();
   await page.getByRole('tab', { name: '分工', exact: true }).click();
@@ -363,7 +399,7 @@ try {
     assert.equal(recovered.taskSessions.length, before.taskSessions.length);
     assert.equal(recovered.projects.some(project => project.tasks.some(task => task.task_id === tasks[1].task_id)), false);
     await setPanelOpen(true);
-    await expect(panel().getByText('原任务暂不可读，仍可查看已保存的试运行事实。', { exact: true })).toBeVisible();
+    await expect(panel().getByText('原任务暂不可读，仍可查看已保存的执行事实。', { exact: true })).toBeVisible();
     await page.getByRole('button', { name: `查看试运行记录：${unknown.record.title}`, exact: true }).click();
     await expect(thread()).toBeVisible();
     await assertChatFrame();

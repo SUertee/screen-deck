@@ -12,7 +12,16 @@ export const canonicalTask = (value: unknown): string => {
 };
 export const taskDigest = (value: unknown): string => createHash('sha256').update(canonicalTask(value)).digest('hex');
 export const taskSpecDigest = (spec: ExecutionSpec, model: ModelSelection, text: string): string => taskDigest({ spec, model, text });
-export const taskResultDigest = (turn: TaskTurnRecord): string => taskDigest({ specDigest: turn.execution.specDigest, result: turn.execution.result ?? null });
+export function taskResultDigest(turn: TaskTurnRecord, session?: TaskSessionRecord): string {
+  const result = { specDigest: turn.execution.specDigest, result: turn.execution.result ?? null };
+  // Existing simulation acceptance IDs must remain byte-for-byte compatible.
+  if (turn.execution.spec.driver.mode === 'simulation') return taskDigest(result);
+  const turns = session?.turns.filter(value => value.turn_id === turn.turn_id);
+  const assistants = session?.messages.filter(value => value.turn_id === turn.turn_id && value.role === 'assistant');
+  if (!turns || turns.length !== 1 || canonicalTask(turns[0]) !== canonicalTask(turn) || !assistants || assistants.length !== 1 || !isUUID(assistants[0]!.message_id) || typeof assistants[0]!.text !== 'string') throw new StorageError('conflict', '成果必须绑定同一会话快照中唯一的原助手消息。');
+  const assistant = assistants[0]!;
+  return taskDigest({ ...result, assistant: { message_id: assistant.message_id, textDigest: createHash('sha256').update(assistant.text).digest('hex') } });
+}
 const fail = (): never => { throw new StorageError('invalid-task-record', '任务执行记录字段无效，原文件未覆盖。'); };
 const obj = (value: unknown): Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : fail();
 const fields = (value: Record<string, unknown>, required: string[], optional: string[] = []) => { if (required.some(key => !(key in value)) || Object.keys(value).some(key => !required.includes(key) && !optional.includes(key))) fail(); };

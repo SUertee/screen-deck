@@ -21,7 +21,6 @@ export class FakeTaskExecutionDriver implements TaskExecutionDriver {
   private readonly runtimeID = randomUUID();
   private readonly attempts = new Map<string, Attempt>();
   constructor(private readonly options: { stepDelayMs?: number } = {}) {}
-  async execute(): Promise<void> { throw new ExecutionError('configuration', '模拟执行器不接受普通模型聊天。', false); }
   async executeTask(request: TaskExecutionRequest, onEvent: (event: TaskEventEnvelope) => Promise<void>, signal: AbortSignal): Promise<void> {
     if (request.spec.driver.mode !== 'simulation' || !['simulation-success', 'simulation-failure', 'simulation-unknown'].includes(request.spec.driver.driverID)) throw new ExecutionError('configuration', '只允许登记的模拟执行器。', false);
     if (this.attempts.has(request.clientRequestID)) throw new ExecutionError('protocol', '模拟器拒绝重复提交。', true);

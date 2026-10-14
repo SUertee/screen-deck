@@ -38,7 +38,7 @@ test('send IPC automatically loads a stored credential and captures one private 
   const h = await harness(); assert.equal(h.settings.publicSettings().hasKey, false);
   await h.invoke('send-message', { sessionID, text: 'fixture prompt' });
   assert.deepEqual(h.requests, [{ sessionID, text: 'fixture prompt', model: { provider_id: 'chat-completions', model_id: preferences.modelID } }]);
-  assert.deepEqual(h.snapshots, [{ endpoint: `${preferences.baseURL}/chat/completions`, modelID: preferences.modelID, credential: secret }]);
+  assert.deepEqual(h.snapshots, [{ baseURL: preferences.baseURL, modelID: preferences.modelID, credential: secret }]);
   assert.equal(Object.isFrozen(h.snapshots[0]), true);
   assert.equal(h.settings.publicSettings().hasKey, true);
   assert.equal(h.events.length, 1); assert.equal(JSON.stringify(h.events).includes(secret), false);
@@ -91,7 +91,7 @@ test('a later settings save cannot retarget Send while its session validation is
   const saving = h.invoke('save-settings', { baseURL: 'https://replacement.example/v1', modelID: 'replacement-model', apiKey: 'replacement-fixture-key', rememberKey: false }).then(() => { saved = true; });
   await new Promise(resolve => setImmediate(resolve)); assert.equal(saved, false);
   release(); await Promise.all([sending, saving]);
-  assert.equal(h.snapshots[0]?.endpoint, `${preferences.baseURL}/chat/completions`);
+  assert.equal(h.snapshots[0]?.baseURL, preferences.baseURL);
   assert.equal(h.snapshots[0]?.modelID, preferences.modelID); assert.equal(h.snapshots[0]?.credential, secret);
   assert.equal(h.settings.publicSettings().baseURL, 'https://replacement.example/v1');
 });

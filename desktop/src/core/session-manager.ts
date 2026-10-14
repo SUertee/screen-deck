@@ -8,6 +8,9 @@ import type { ApprovalRequest, ExecutionSpec, TaskExecutionRequest, TaskSessionR
 import type { TaskSessionHistoryStoring } from './task-session-history-store.js';
 import type { TaskExecutionDriver } from './task-execution-driver.js';
 import { TaskSessionLifecycle } from './task-session-lifecycle.js';
+import type { AgentSessionHistoryStoring } from './agent-session-history-store.js';
+import type { AgentChatDriver } from './agent-chat-driver.js';
+import { AgentSessionLifecycle } from './agent-session-lifecycle.js';
 
 const terminal = new Set(['finished', 'failed', 'cancelled']);
 const comparable = (value: unknown): string => {
@@ -31,6 +34,7 @@ export interface SessionManagerOptions {
   now?: () => Date;
   persistIntervalMs?: number;
   task?: { store: TaskSessionHistoryStoring; driver: TaskExecutionDriver; resolveApproval?: (id: string) => Promise<ApprovalRequest | undefined> };
+  agent?: { store: AgentSessionHistoryStoring; driver: AgentChatDriver };
 }
 
 /** Owns local turn state. Drivers cannot authorize tools, edit plans, or own this history. */
@@ -42,26 +46,66 @@ export class SessionManager {
   private readonly loading = new Map<string, Promise<SessionRecord | undefined>>();
   private closed = false;
   private readonly taskLifecycle?: TaskSessionLifecycle;
-  constructor(private readonly options: SessionManagerOptions) { if (options.task) this.taskLifecycle = new TaskSessionLifecycle(options.task.store, options.task.driver, options.now, options.task.resolveApproval); }
+  private readonly agentLifecycle?: AgentSessionLifecycle;
+  constructor(private readonly options: SessionManagerOptions) {
+    if (options.task) {
+      const store = options.task.store;
+      this.taskLifecycle = new TaskSessionLifecycle({
+        load: async (id, observe) => { await this.assertNotAgent(id); return store.load(id, observe); },
+        save: async (record, revision) => { await this.assertNotAgent(record.conversation_id); return store.save(record, revision); },
+        list: async observe => {
+          const listing = await store.list(observe);
+          const records: typeof listing.records = [];
+          for (const record of listing.records) {
+            try { await this.assertNotAgent(record.conversation_id); records.push(record); }
+            catch (error) { listing.diagnostics.push({ filename: `${record.conversation_id}.json`, reason: error instanceof StorageError ? error.message : 'Agent 身份核对失败。' }); }
+          }
+          return { records, diagnostics: listing.diagnostics };
+        },
+      }, options.task.driver, options.now, options.task.resolveApproval);
+    }
+    if (options.agent) this.agentLifecycle = new AgentSessionLifecycle(options.agent.store, options.agent.driver, options.now, options.persistIntervalMs);
+  }
+
+  createAgentSession(input: Parameters<AgentSessionLifecycle['create']>[0]) { return this.agents().create(input); }
+  listAgentSessions() { return this.agentLifecycle?.list() ?? Promise.resolve({ records: [], diagnostics: [] }); }
+  loadAgentSession(id: string) { return this.agents().load(id); }
+  sendAgentMessage(input: Parameters<AgentSessionLifecycle['send']>[0]) { return this.agents().send(input); }
+  stopAgentGeneration(id: string) { return this.agents().stop(id); }
+  retryAgentPendingWrites(id: string) { return this.agents().retry(id); }
+  subscribeAgent(callback: Parameters<AgentSessionLifecycle['subscribe']>[0]) { return this.agents().subscribe(callback); }
+  private agents(): AgentSessionLifecycle { if (!this.agentLifecycle) throw new StorageError('unsupported', 'Agent 聊天能力尚未配置。'); return this.agentLifecycle; }
+  private async assertNotAgent(id: string): Promise<void> {
+    if (await this.options.agent?.store.load(id)) throw new StorageError('duplicate-session', 'Agent 会话不能作为其他格式读取或写入。');
+  }
 
   createTaskSession(input: { title: string; projectID: string; taskID: string }) { return this.tasks().create(input); }
-  listTaskSessions(input?: { projectID: string; taskID: string }) { return this.taskLifecycle?.list(input) ?? Promise.resolve({ records: [], diagnostics: [] }); }
-  loadTaskSession(ref: TaskSessionRef) { return this.tasks().load(ref); }
-  getTaskTurn(turn: TaskTurnRef) { return this.tasks().get(turn); }
-  prepareTaskTurn(input: { session: TaskSessionRef; clientRequestID: string; text: string; model: SendMessageInput['model']; spec: ExecutionSpec }) { return this.tasks().prepare(input); }
-  startTaskTurn(input: { turn: TaskTurnRef; approvalID: string; check: () => void; resolved: TaskExecutionRequest['resolved'] }) { return this.tasks().start(input); }
-  cancelTaskExecution(turn: TaskTurnRef) { return this.tasks().cancel(turn); }
-  replyTaskPermission(input: { turn: TaskTurnRef; approval: ApprovalRequest; check: () => void }) { return this.tasks().reply(input); }
-  reconcileTaskExecution(turn: TaskTurnRef) { return this.tasks().reconcile(turn); }
-  failPreparedTaskTurn(turn: TaskTurnRef, reason: string) { return this.tasks().failPrepared(turn, reason); }
+  async listTaskSessions(input?: { projectID: string; taskID: string }) {
+    const listing = await (this.taskLifecycle?.list(input) ?? Promise.resolve({ records: [], diagnostics: [] }));
+    const records: typeof listing.records = [];
+    for (const record of listing.records) {
+      try { await this.assertNotAgent(record.conversation_id); records.push(record); }
+      catch (error) { listing.diagnostics.push({ filename: `${record.conversation_id}.json`, reason: error instanceof StorageError ? error.message : 'Agent 身份核对失败。' }); }
+    }
+    return { records, diagnostics: listing.diagnostics };
+  }
+  async loadTaskSession(ref: TaskSessionRef) { await this.assertNotAgent(ref.sessionID); return this.tasks().load(ref); }
+  async getTaskTurn(turn: TaskTurnRef) { await this.assertNotAgent(turn.session.sessionID); return this.tasks().get(turn); }
+  async prepareTaskTurn(input: { session: TaskSessionRef; clientRequestID: string; text: string; model: SendMessageInput['model']; spec: ExecutionSpec }) { await this.assertNotAgent(input.session.sessionID); return this.tasks().prepare(input); }
+  async startTaskTurn(input: { turn: TaskTurnRef; approvalID: string; check: () => void; resolved: TaskExecutionRequest['resolved'] }) { await this.assertNotAgent(input.turn.session.sessionID); return this.tasks().start(input); }
+  async cancelTaskExecution(turn: TaskTurnRef) { await this.assertNotAgent(turn.session.sessionID); return this.tasks().cancel(turn); }
+  async replyTaskPermission(input: { turn: TaskTurnRef; approval: ApprovalRequest; check: () => void }) { await this.assertNotAgent(input.turn.session.sessionID); return this.tasks().reply(input); }
+  async reconcileTaskExecution(turn: TaskTurnRef) { await this.assertNotAgent(turn.session.sessionID); return this.tasks().reconcile(turn); }
+  async failPreparedTaskTurn(turn: TaskTurnRef, reason: string) { await this.assertNotAgent(turn.session.sessionID); return this.tasks().failPrepared(turn, reason); }
   hasTaskPendingWrites(id: string): boolean { return this.tasks().hasPending(id); }
-  retryTaskPendingWrites(ref: TaskSessionRef) { return this.tasks().retry(ref); }
+  async retryTaskPendingWrites(ref: TaskSessionRef) { await this.assertNotAgent(ref.sessionID); return this.tasks().retry(ref); }
   subscribeTask(callback: Parameters<TaskSessionLifecycle['subscribe']>[0]) { return this.tasks().subscribe(callback); }
   private tasks(): TaskSessionLifecycle { if (!this.taskLifecycle) throw new StorageError('unsupported', '任务执行能力尚未配置。'); return this.taskLifecycle; }
 
   async createSession(title: string, scope?: SessionScope): Promise<SessionRecord> {
     this.ensureOpen();
     const id = randomUUID(); const now = this.now();
+    await this.assertNotAgent(id);
     if (await this.options.task?.store.load(id)) throw new StorageError('duplicate-session', '另一格式已使用此会话身份。');
     const record: SessionRecord = { schema_version: 1, conversation_id: id, title: title.trim(), scope: scope ?? { kind: 'local_chat', local_chat_id: id }, created_at: now, updated_at: now, revision: 0, turns: [], messages: [] };
     const saved = await this.options.store.save(record);
@@ -75,6 +119,7 @@ export class SessionManager {
     for (const record of listing.records) {
       const id = record.conversation_id;
       try {
+        await this.assertNotAgent(id);
         if (await this.options.task?.store.load(id)) throw new StorageError('duplicate-session', '两个格式声明相同会话身份。');
       } catch (error) {
         listing.diagnostics.push({ filename: `${id}.json`, reason: error instanceof StorageError ? error.message : '任务会话身份核对失败。' });
@@ -89,6 +134,7 @@ export class SessionManager {
 
   async loadSession(id: string): Promise<SessionRecord | undefined> {
     this.ensureOpen();
+    await this.assertNotAgent(id);
     if (await this.options.task?.store.load(id)) throw new StorageError('duplicate-session', '任务会话不能作为普通聊天读取。');
     if (this.active.has(id) || this.pendingWrites.has(id)) return structuredClone(this.cache.get(id));
     const loading = this.loading.get(id);
@@ -111,6 +157,7 @@ export class SessionManager {
     this.active.set(id, active);
     let prepared = false;
     try {
+      await this.assertNotAgent(id);
       // Always pair the source with a fresh observation. A list operation may have
       // observed newer bytes before this turn became active, while the UI cache lagged.
       const loaded = await this.options.store.load(id);
@@ -200,6 +247,7 @@ export class SessionManager {
 
   async shutdown(): Promise<void> {
     this.closed = true;
+    await this.agentLifecycle?.shutdown();
     await this.taskLifecycle?.shutdown();
     const turns = [...this.active.values()];
     for (const turn of turns) turn.controller.abort();
@@ -252,6 +300,8 @@ export class SessionManager {
   private async persist(id: string): Promise<void> {
     const record = this.record(id);
     try {
+      await this.assertNotAgent(id);
+      if (await this.options.task?.store.load(id)) throw new StorageError('duplicate-session', '不同格式声明相同会话身份，未覆盖原记录。');
       const saved = await this.options.store.save(structuredClone(record), record.revision || undefined);
       this.cache.set(id, saved); this.pendingWrites.delete(id); this.updated(saved);
     } catch (error) {

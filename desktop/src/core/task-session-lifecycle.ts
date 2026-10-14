@@ -87,10 +87,10 @@ export class TaskSessionLifecycle {
       this.state(ref, 'cancelling'); await this.persist(ref.session.sessionID); return this.lookup(turn);
     });
     if (!lookup) return this.get(ref);
-    let confirmed = false; try { confirmed = this.driver.taskCapabilities.confirmedCancel && (await this.driver.cancelExecution(lookup)).status === 'confirmed'; } catch { /* Unknown is not cancellation. */ }
+    let confirmed = false; try { confirmed = this.driver.capabilities.remoteAbort && (await this.driver.cancelExecution(lookup)).status === 'confirmed'; } catch { /* Unknown is not cancellation. */ }
     await this.serial(ref.session.sessionID, async () => {
       const turn = this.turn(ref); if (terminal(turn.state)) return;
-      this.state(ref, confirmed ? 'cancelled' : 'unknown', confirmed ? '模拟执行已确认停止。' : '无法确认外部停止。');
+      this.state(ref, confirmed ? 'cancelled' : 'unknown', confirmed ? '执行已确认停止。' : '无法确认外部停止。');
       this.active.get(ref.session.sessionID)?.controller.abort(); await this.persist(ref.session.sessionID);
     }); return this.get(ref);
   }
@@ -158,7 +158,7 @@ export class TaskSessionLifecycle {
     } catch (error) {
       await this.serial(ref.session.sessionID, async () => {
         if (terminal(this.turn(ref).state) || (!active.callbacks && !this.pending.has(ref.session.sessionID))) return;
-        this.state(ref, error instanceof ExecutionError && !error.attempted ? 'failed' : 'unknown', '模拟执行未能确认完成，不会自动重发。');
+        this.state(ref, error instanceof ExecutionError && !error.attempted ? 'failed' : 'unknown', '执行未能确认完成，不会自动重发。');
         if (this.pending.has(ref.session.sessionID)) this.pending.set(ref.session.sessionID, structuredClone(this.record(ref.session.sessionID)));
         else try { await this.persist(ref.session.sessionID); } catch { /* Pending facts remain in memory. */ }
       });
@@ -174,7 +174,15 @@ export class TaskSessionLifecycle {
       if (envelope.sequence !== receipts.length + 1 || receipts.length >= 4096) throw new ExecutionError('protocol', '事件序列不连续或超过上限。', true);
       const event = envelope.event;
       if (event.type === 'bound') { validateTaskBinding(event.binding); if (turn.execution.external && canonicalTask(turn.execution.external) !== canonicalTask(event.binding)) throw new ExecutionError('protocol', '外部绑定变化。', true); turn.execution.external = structuredClone(event.binding); }
-      else if (event.type === 'submitted') { if (!turn.execution.external || turn.execution.external.externalSubmissionID && turn.execution.external.externalSubmissionID !== event.externalSubmissionID) throw new ExecutionError('protocol', '外部提交身份缺失或变化。', true); turn.execution.external.externalSubmissionID = event.externalSubmissionID; if (turn.state !== 'cancelling') this.state(ref, 'running'); }
+      else if (event.type === 'submitted') {
+        if (!turn.execution.external) throw new ExecutionError('protocol', '外部会话绑定缺失。', true);
+        if (event.externalSubmissionID !== undefined) {
+          validateTaskBinding({ ...turn.execution.external, externalSubmissionID: event.externalSubmissionID });
+          if (turn.execution.external.externalSubmissionID && turn.execution.external.externalSubmissionID !== event.externalSubmissionID) throw new ExecutionError('protocol', '外部提交身份变化。', true);
+          turn.execution.external.externalSubmissionID = event.externalSubmissionID;
+        }
+        if (turn.state !== 'cancelling') this.state(ref, 'running');
+      }
       else if (event.type === 'text-delta') { const assistant = this.record(ref.session.sessionID).messages.find(value => value.turn_id === ref.turnID && value.role === 'assistant')!; if (typeof event.text !== 'string' || Buffer.byteLength(assistant.text) + Buffer.byteLength(event.text) > SESSION_LIMITS.messageBytes) throw new ExecutionError('protocol', '输出超出上限。', true); assistant.text += event.text; assistant.updated_at = this.time(); }
       else if (event.type === 'observed-model') { validateModel(event.model); if (turn.observed_model && canonicalTask(turn.observed_model) !== canonicalTask(event.model)) throw new ExecutionError('protocol', '观测模型变化。', true); turn.observed_model = structuredClone(event.model); }
       else if (event.type === 'permission-request') {

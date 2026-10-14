@@ -13,11 +13,18 @@
     "test": "node scripts/test.mjs",
     "package:mac": "npm run setup:electron && npm run build && node scripts/package-mac.mjs",
     "smoke": "npm run setup:electron && npm run build && node scripts/smoke.mjs",
-    "smoke:layout": "npm run setup:electron && npm run build && node scripts/layout-smoke.mjs"
+    "smoke:layout": "npm run setup:electron && npm run build && node scripts/layout-smoke.mjs",
+    "smoke:opencode": "node --import tsx scripts/opencode-runtime-smoke.mjs",
+    "smoke:acp": "node --import tsx scripts/opencode-acp-runtime-smoke.mjs",
+    "smoke:acp:ui": "node scripts/opencode-acp-ui-smoke.mjs",
+    "smoke:agent-chat": "node --import tsx scripts/agent-chat-runtime-smoke.mjs",
+    "smoke:agent-chat:ui": "node scripts/agent-chat-ui-smoke.mjs",
+    "smoke:opencode:discovery": "node scripts/opencode-discovery-ui-smoke.mjs"
   },
   "dependencies": {
-    "ajv": "8.20.0",
+    "@agentclientprotocol/sdk": "1.8.0",
     "@iarna/toml": "2.2.5",
+    "ajv": "8.20.0",
     "lucide-react": "1.55.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",
@@ -34,5 +41,7 @@
     "typescript": "7.0.2",
     "vite": "8.3.4"
   },
-  "engines": { "node": ">=22.12.0" }
+  "engines": {
+    "node": ">=22.12.0"
+  }
 }

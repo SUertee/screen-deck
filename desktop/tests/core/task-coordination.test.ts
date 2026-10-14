@@ -11,7 +11,7 @@ import { SessionHistoryStore } from '../../src/core/session-history-store.js';
 import { TaskSessionHistoryStore } from '../../src/core/task-session-history-store.js';
 import { FakeTaskExecutionDriver } from '../../src/core/fake-task-execution-driver.js';
 import { canonicalDigest } from '../../src/core/execution-records.js';
-import { taskDigest } from '../../src/core/task-session-schema.js';
+import { taskDigest, taskResultDigest } from '../../src/core/task-session-schema.js';
 import type { ExecutionDriver } from '../../src/core/execution-driver.js';
 import type { AuthorizationInput, TaskTurnRecord, TaskTurnRef, ToolPolicy } from '../../src/shared/task-execution.js';
 import type { PlanWorkItem } from '../../src/shared/types.js';
@@ -102,6 +102,20 @@ test('save, request, approve, start and manual acceptance remain separate; dupli
     const freshPlans = new TaskOrchestrator(f.root); freshPlans.configureExecution(f.configuration);
     assert.deepEqual((await freshPlans.getWorkItemReview(prepared.turn)).acceptance, accepted);
     assert.equal((await f.plans.loadPlan(f.plan.id))?.work_items[0]?.status, 'planned');
+  } finally { await f.manager.shutdown(); }
+});
+
+test('external coordination requires trusted registration and refuses tools or materials before resolving them', async () => {
+  const f = await fixture(); let materialReads = 0;
+  const external = { ...f.configuration, driverRef: (driverID: string) => ({ driverID, configDigest: 'b'.repeat(64), mode: 'external' as const }), resolveMaterials: async () => { materialReads++; return []; } };
+  try {
+    const unregistered = new TaskOrchestrator(f.root); unregistered.configureExecution(external);
+    const input = { ...f.input(), driverID: 'fixture-external', model: { provider_id: 'fixture-provider', model_id: 'fixture-model' } };
+    await assert.rejects(unregistered.requestExecutionAuthorization(input), /尚未注册/);
+    const registered = new TaskOrchestrator(f.root); registered.configureExecution({ ...external, validateSelection: () => {} });
+    await assert.rejects(registered.requestExecutionAuthorization({ ...input, tools: { kind: 'restricted', readRoots: ['.'], writeRoots: [], commands: [] } }), /仅支持本次输入/);
+    await assert.rejects(registered.requestExecutionAuthorization({ ...input, materialIDs: ['source-reference'] }), /仅支持本次输入/);
+    assert.equal(materialReads, 0); assert.equal(f.driver.counts.created, 0); assert.deepEqual((await f.manager.loadTaskSession(input.session))!.turns, []);
   } finally { await f.manager.shutdown(); }
 });
 
@@ -234,5 +248,24 @@ test('saved finished review remains readable when new artifact verification is u
     const reader = new TaskOrchestrator(f.root); reader.configureExecution({ ...f.configuration, verifyResult: async () => { throw new Error('Source unavailable'); } });
     assert.deepEqual((await reader.getWorkItemReview(prepared.turn)).acceptance, accepted);
     await assert.rejects(reader.reviewWorkItem({ turn: prepared.turn, resultDigest: view.resultDigest, choice: 'accept' }), /Source unavailable/);
+  } finally { await f.manager.shutdown(); }
+});
+
+test('simulation keeps the existing digest and stored acceptance even when only assistant message bytes change', async () => {
+  const f = await fixture();
+  try {
+    const prepared = await approveAndStart(f); const turn = await waitState(f.manager, prepared.turn, 'finished');
+    const view = await f.plans.getWorkItemReview(prepared.turn);
+    assert.equal(view.resultDigest, taskDigest({ specDigest: turn.execution.specDigest, result: turn.execution.result ?? null }));
+    assert.equal(taskResultDigest(turn), view.resultDigest, 'the old simulation call shape remains valid');
+    const accepted = await f.plans.reviewWorkItem({ turn: prepared.turn, resultDigest: view.resultDigest, choice: 'accept' });
+    const file = join(f.root, 'execution-acceptances-v1', `${accepted.id}.json`); const bytes = await readFile(file);
+    const record = (await f.taskStore.load(f.session.conversation_id))!;
+    const assistant = record.messages.find(message => message.turn_id === prepared.turn.turnID && message.role === 'assistant')!;
+    assistant.text = 'Only simulation Message bytes changed; the original result contract is retained.'; assistant.message_id = randomUUID();
+    await f.taskStore.save(record, record.revision);
+    const retained = await f.plans.getWorkItemReview(prepared.turn);
+    assert.equal(retained.resultDigest, view.resultDigest); assert.deepEqual(retained.acceptance, accepted); assert.deepEqual(await readFile(file), bytes);
+    assert.equal(f.driver.counts.created, 1);
   } finally { await f.manager.shutdown(); }
 });

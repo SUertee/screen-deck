@@ -38,7 +38,7 @@ test('automatic asynchronous credential loads are idempotent and leave persisted
   assert.equal(store.snapshot().credential, undefined);
   gate.release();
   const [first, publicSettings, repeated] = await pending; await store.ensureCredential();
-  assert.deepEqual(first, { endpoint: `${preferences.baseURL}/chat/completions`, modelID: preferences.modelID, credential: secret });
+  assert.deepEqual(first, { baseURL: preferences.baseURL, modelID: preferences.modelID, credential: secret });
   assert.equal(Object.isFrozen(first), true); assert.deepEqual(repeated, first);
   assert.deepEqual(publicSettings, { ...preferences, hasKey: true, credentialStorage: 'encrypted' });
   assert.equal(JSON.stringify(publicSettings).includes(secret), false); assert.deepEqual(calls, [1, 0, 1]);
@@ -58,11 +58,11 @@ test('a request freezes its loaded destination and credential before queued save
   gate.release();
   const [original, saved, next] = await Promise.all([first, saving, second]);
   assert.deepEqual(order, ['first request', 'save', 'second request']);
-  assert.deepEqual(original, { endpoint: `${preferences.baseURL}/chat/completions`, modelID: preferences.modelID, credential: secret });
-  assert.equal(Object.isFrozen(original), true); assert.equal(Reflect.set(original, 'endpoint', next.endpoint), false);
-  assert.deepEqual(next, { endpoint: `${replacement.baseURL}/chat/completions`, modelID: replacement.modelID, credential: replacement.apiKey });
+  assert.deepEqual(original, { baseURL: preferences.baseURL, modelID: preferences.modelID, credential: secret });
+  assert.equal(Object.isFrozen(original), true); assert.equal(Reflect.set(original, 'baseURL', next.baseURL), false);
+  assert.deepEqual(next, { baseURL: replacement.baseURL, modelID: replacement.modelID, credential: replacement.apiKey });
   assert.equal(saved.credentialStorage, 'memory'); assert.equal((await readFile(join(root, 'credential.bin'))).length, 0);
-  assert.deepEqual(original, { endpoint: `${preferences.baseURL}/chat/completions`, modelID: preferences.modelID, credential: secret });
+  assert.deepEqual(original, { baseURL: preferences.baseURL, modelID: preferences.modelID, credential: secret });
 });
 
 test('external edits while async availability or decryption waits reject the load without changing its CAS baseline', async () => {

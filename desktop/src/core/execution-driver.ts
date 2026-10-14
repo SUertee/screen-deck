@@ -11,9 +11,11 @@ export type ExecutionEvent =
   | { type: 'observed-model'; model: ModelSelection }
   | { type: 'completed' };
 
+export type ExecutionCapabilities = Readonly<{ chat: boolean; tools: boolean; remoteSessions: boolean; remoteAbort: boolean }>;
+
 /** Stateless chat needs no invented external session, permissions, or remote abort. */
 export interface ExecutionDriver {
-  readonly capabilities: Readonly<{ chat: boolean; tools: boolean; remoteSessions: boolean; remoteAbort: boolean }>;
+  readonly capabilities: ExecutionCapabilities;
   execute(request: ExecutionRequest, onEvent: (event: ExecutionEvent) => Promise<void>, signal: AbortSignal): Promise<void>;
 }
 

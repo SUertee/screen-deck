@@ -1,16 +1,15 @@
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import * as TOML from '@iarna/toml';
 import { atomicReplace, checkDirectories, readBytes, StorageError, withExclusiveLock } from '../core/private-storage.js';
-import type { ProviderSettings, SettingsInput } from '../shared/desktop-api.js';
+import type { LLMProviderConfig, ProviderSettings, SettingsInput } from '../shared/desktop-api.js';
 
 export interface CredentialCipher {
   available(): boolean | Promise<boolean>;
   encrypt(value: string): Buffer | Promise<Buffer>;
   decrypt(value: Buffer): string | Promise<string>;
 }
-export interface ProviderRequestSnapshot {
-  readonly endpoint: string;
-  readonly modelID: string;
+export interface ProviderRequestSnapshot extends Readonly<LLMProviderConfig> {
   readonly credential: string | undefined;
 }
 export const DEFAULT_PROVIDER = Object.freeze({ baseURL: 'https://token-api.yicloud.com/v1', modelID: 'GLM-5.3-Flash' });
@@ -25,7 +24,9 @@ export function validateProvider(baseURL: unknown, modelID: unknown): { baseURL:
 
 /** Main-process only: public preferences and encrypted credential are separate files. */
 export class ProviderSettingsStore {
-  private preferences: { baseURL: string; modelID: string } = { ...DEFAULT_PROVIDER };
+  private settingsGeneration = randomUUID();
+  get generation(): string { return this.settingsGeneration; }
+  private preferences: LLMProviderConfig = { ...DEFAULT_PROVIDER };
   private credential: string | undefined;
   private storage: ProviderSettings['credentialStorage'] = 'none';
   private queue: Promise<unknown> = Promise.resolve();
@@ -55,7 +56,7 @@ export class ProviderSettingsStore {
 
   publicSettings(): ProviderSettings { return { ...this.preferences, hasKey: !!this.credential, credentialStorage: this.storage }; }
   snapshot(): ProviderRequestSnapshot {
-    return Object.freeze({ endpoint: `${this.preferences.baseURL}/chat/completions`, modelID: this.preferences.modelID, credential: this.credential });
+    return Object.freeze({ baseURL: this.preferences.baseURL, modelID: this.preferences.modelID, credential: this.credential });
   }
 
   ensureCredential(): Promise<ProviderSettings> {
@@ -119,9 +120,11 @@ export class ProviderSettingsStore {
       }); } catch (error) {
         // Include uncertain credential writes and lock-release failure, not just config writes.
         this.credential = undefined; this.storage = 'none'; this.boundBaseURL = undefined;
+        this.settingsGeneration = randomUUID();
         throw error;
       }
       this.preferences = preferences; this.boundBaseURL = preferences.baseURL; this.credential = credential;
+      this.settingsGeneration = randomUUID();
       this.storage = preserveLocked ? 'locked' : credential ? encrypted.length ? 'encrypted' : 'memory' : 'none';
       return this.publicSettings();
     });

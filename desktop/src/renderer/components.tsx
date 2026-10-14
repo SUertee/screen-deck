@@ -7,6 +7,18 @@ export function Brand({ compact = false }: { compact?: boolean }) {
   return <span className="brand"><span className="brand-mark" aria-hidden="true"><i /><i /></span>{!compact && <span>ScreenDeck</span>}</span>;
 }
 
+/** A source change prepares a new chat; it never starts a runtime or moves history. */
+export function ChatSourcePicker({ value, onChange, disabled = false, state = 'default' }: {
+  value: 'model' | 'agent'; onChange: (value: 'model' | 'agent') => void; disabled?: boolean; state?: 'default' | 'loading' | 'error' | 'success';
+}) {
+  return <span className="chat-source-control" data-state={disabled ? 'disabled' : state} aria-busy={state === 'loading'}>
+    <select className="chat-source-select" aria-label="聊天来源" aria-describedby="chat-source-hint" value={value} disabled={disabled} onChange={event => onChange(event.target.value === 'agent' ? 'agent' : 'model')}>
+      <option value="model">模型聊天</option><option value="agent">OpenCode</option>
+    </select>
+    <span id="chat-source-hint" className="visually-hidden">切换来源会进入新聊天，保留原记录与草稿。</span>
+  </span>;
+}
+
 export function Empty({ icon, title, children, action }: { icon?: ReactNode; title: string; children?: ReactNode; action?: ReactNode }) {
   return <div className="empty"><div className="empty-icon" aria-hidden="true">{icon}</div><h2>{title}</h2>{children && <p>{children}</p>}{action && <div className="empty-action">{action}</div>}</div>;
 }
@@ -45,7 +57,7 @@ export function TimelineRow({ title, date, children, state }: { title: string; d
 }
 
 /** All background regions become inert while a sheet is open. */
-export function Modal({ title, children, onClose, wide = false }: { title: string; children: ReactNode; onClose: () => void; wide?: boolean }) {
+export function Modal({ title, children, onClose, wide = false, className }: { title: string; children: ReactNode; onClose: () => void; wide?: boolean; className?: string }) {
   const dialog = useRef<HTMLDivElement>(null);
   const initialClose = useRef(onClose);
   useEffect(() => {
@@ -66,5 +78,5 @@ export function Modal({ title, children, onClose, wide = false }: { title: strin
     document.addEventListener('keydown', onKey);
     return () => { shell?.removeAttribute('inert'); document.removeEventListener('keydown', onKey); previous?.focus(); };
   }, []);
-  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className={`modal ${wide ? 'modal-wide' : ''}`} ref={dialog} role="dialog" aria-modal="true" aria-labelledby="modal-title"><header className="modal-header"><h2 id="modal-title">{title}</h2><button className="icon-button" aria-label="关闭" onClick={onClose}><X size={18} /></button></header>{children}</div></div>;
+  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className={`modal ${wide ? 'modal-wide' : ''} ${className ?? ''}`} ref={dialog} role="dialog" aria-modal="true" aria-labelledby="modal-title"><header className="modal-header"><h2 id="modal-title">{title}</h2><button className="icon-button" aria-label="关闭" onClick={onClose}><X size={18} /></button></header>{children}</div></div>;
 }

@@ -32,11 +32,11 @@
 - 测试使用临时数据，不操作用户真实任务、采集记录、凭据或私人聊天。真实模型调用需明确授权，仅外发本次输入与本会话已完成消息；不自动附加项目文件、其他聊天、日志或屏幕记录。
 - 模型凭据由 Electron main 保管，不返回 renderer、不写源码或日志。不提交密钥、令牌、`.env`、本机凭据、用户记录、临时截图或本机绝对路径。
 - 正式项目历史默认在 `~/.screendeck/projects/<project_id>/`，`history.json` 绑定实际项目根；`tasks/`、`runs/`、`artifacts/` 是正式记录与原件。项目内 `.screendeck/` 只留五字段 v2 身份、TOML 约定与简短说明。
-- Electron 聊天、task-v2 会话、预览计划与审批写入独立的 `~/.screendeck/previews/electron-v1/`；与正式项目历史及 Swift 数据隔离，不自动迁移、合并、双写或回写正式任务。两版不能共用可写会话目录。
+- Electron 模型聊天、独立Agent与task-v2会话、预览计划与审批写入独立的 `~/.screendeck/previews/electron-v1/`；与正式项目历史及 Swift 数据隔离，不自动迁移、合并、双写或回写正式任务。两版不能共用可写会话目录。
 - 原项目 task/run 维持 v1 契约，应用读取只读；需要维护正式记录时，由单一维护者串行维护并运行根 `node scripts/validate-project-workspace.mjs`。唯一字段与日期规则源是 `desktop/src/projects/record-schema.ts`。根脚本需支持原生 TypeScript 类型剥离的 Node，本机已验证 22.21.1，不能把桌面应用 22.12+ 的最低要求当作裸 Node 导入 TS 的保证。
 - 迁移必须明确确认、完整备份、核验引用并保留回退依据。旧 Application Support 的本机任务／采集设置迁移是另一项工作，不能与项目历史迁移混同。
 - 中心保留普通聊天，右栏负责任务与文件上下文；“讨论这一步”只准备草稿。产品已撤独立模拟页与新模拟尝试入口；旧 task-v2 事实可读取并处理既有许可、核对及验收，假执行器保留供隔离测试。
-- 普通聊天不是完整 Agent。真实工具循环、OpenCode/Codex CLI Adapter、正式任务写入、对话改计划、自动导出与 JEV/CLI/API 仍未接入；产物整理不阻塞基础记录。
+- 模型聊天保留直接LLM窄接口；OpenCode通过并列AgentChatDriver支持无Task前提的连续文本聊天，新历史单写agent-sessions-v1，固定来源及原绑定，每轮只发本次输入，跨重启不load／重绑。聊天来源切换新建并保留旧草稿；来源选择不启动进程或加载密钥。当前不是完整coding Agent。OpenCode 1.19.0 已通过官方 TypeScript ACP SDK 1.8.0 接入稳定 ACP v1 无工具、无附件文本；程序发现只查元数据，不加载密钥或执行程序；OpenCodeDiscovery 经 LocalState 单写成功位置，ProviderSettingsStore 不管理程序路径。runtime 显式启动、实例与配置受控，停止只针对原 prompt 且须明确 cancelled 回执；核对仅使用同一活连接内的原终态缓存，重启无法确认就保持 unknown，不自动恢复或重发。旧 HTTP 适配器保留兼容测试，不把旧未知绑定交给 ACP 查询。真实文件／命令工具、Codex CLI Adapter、正式任务写入、对话改计划、自动导出与 JEV/CLI/API 仍未接入。Fake 仅在非打包版本的显式临时测试模式使用，runtime 不可用不回退 Fake；产物整理不阻塞基础记录。
 - 配置、TOML、日志、保存计划和模型建议都不授予执行权限。执行授权／开始、工具决定／投递、执行结束／人工验收是不同事实，不能混同；未知结果不自动重发。
 
 ## 验证与交接

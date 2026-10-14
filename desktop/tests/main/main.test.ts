@@ -51,7 +51,7 @@ test('provider public settings reveal presence and storage mode without a creden
   const loaded = await restarted.ensureCredential();
   assert.deepEqual(loaded, { ...preferences, hasKey: true, credentialStorage: 'encrypted' });
   assert.equal(JSON.stringify(loaded).includes(secret), false);
-  assert.equal(restarted.snapshot().credential, secret); assert.equal(restarted.snapshot().endpoint, preferences.baseURL + '/chat/completions');
+  assert.equal(restarted.snapshot().credential, secret); assert.equal(restarted.snapshot().baseURL, preferences.baseURL);
 });
 
 test('an endpoint or path change cannot silently inherit an old key', async () => {
@@ -68,8 +68,8 @@ test('a captured submission snapshot remains bound to its original endpoint, mod
   const store = new ProviderSettingsStore(await temp(), fakeCipher()); await store.initialize();
   await store.save({ ...preferences, apiKey: secret, rememberKey: true }); const pending = store.snapshot();
   await store.save({ baseURL: 'https://another-provider.example/v1', modelID: 'another-model', apiKey: 'different-test-secret', rememberKey: true });
-  assert.deepEqual(pending, { endpoint: `${preferences.baseURL}/chat/completions`, modelID: preferences.modelID, credential: secret });
-  assert.notEqual(store.snapshot().endpoint, pending.endpoint); assert.notEqual(store.snapshot().credential, pending.credential);
+  assert.deepEqual(pending, { baseURL: preferences.baseURL, modelID: preferences.modelID, credential: secret });
+  assert.notEqual(store.snapshot().baseURL, pending.baseURL); assert.notEqual(store.snapshot().credential, pending.credential);
 });
 
 test('memory-only keys and forgetting credentials leave no recoverable key on restart', async () => {
@@ -220,7 +220,7 @@ test('credential load and destination saves run in caller order without reviving
     const root = await savedCredentialRoot(); const cipher = fakeCipher(); const store = new ProviderSettingsStore(root, cipher); await store.initialize();
     const results = await Promise.allSettled(loadFirst ? [store.ensureCredential(), store.save(newPreferences)] : [store.save(newPreferences), store.ensureCredential()]);
     assert.equal(results[0]!.status, 'fulfilled'); assert.equal(results[1]!.status, loadFirst ? 'fulfilled' : 'rejected');
-    await store.flush(); assert.equal(store.snapshot().endpoint, newPreferences.baseURL + '/chat/completions'); assert.equal(store.snapshot().credential, undefined);
+    await store.flush(); assert.equal(store.snapshot().baseURL, newPreferences.baseURL); assert.equal(store.snapshot().credential, undefined);
     assert.equal(store.publicSettings().credentialStorage, 'none'); assert.equal((await readFile(join(root, 'credential.bin'))).length, 0);
     await store.save({ ...preferences, rememberKey: true }); await assert.rejects(store.ensureCredential()); assert.deepEqual(cipherCounts(cipher), loadFirst ? [1, 0, 1] : [0, 0, 0]);
   }

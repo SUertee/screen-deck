@@ -1,0 +1,30 @@
+/* finesse · component: native-task-execution · register=product · tokens=inherited */
+.native-task-execution { display: grid; gap: 12px; min-width: 0; padding: 14px; border: 1px solid var(--border); border-radius: var(--r); color: var(--ink-1); background: var(--bg); }
+.native-task-execution h3, .native-task-execution p { margin: 0; }
+.native-task-execution h3 { font-size: 14px; }
+.native-task-execution p { color: var(--ink-2); line-height: 1.6; overflow-wrap: anywhere; }
+.native-task-execution header, .native-task-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.native-task-execution header > span { color: var(--ink-2); margin-right: auto; }
+.native-task-execution button { min-height: 32px; padding: 6px 10px; border: 1px solid var(--border-strong); border-radius: var(--r-sm); }
+.native-task-execution .native-task-primary { background: var(--accent); color: var(--on-accent); }
+.native-task-execution button:disabled { cursor: not-allowed; opacity: .5; }
+.native-task-execution :is(button,input,textarea,select,summary):focus-visible { outline: 2px solid var(--ink-1); outline-offset: 2px; }
+@media (hover: hover) { .native-task-execution button:hover:not(:disabled) { background: var(--selected); color: var(--ink-1); } }
+.native-task-execution button:active:not(:disabled) { transform: translateY(1px); }
+.native-task-execution fieldset { display: grid; gap: 10px; padding: 12px; min-width: 0; border: 1px solid var(--border); border-radius: var(--r-sm); margin: 0; }
+.native-task-execution legend { padding: 0 4px; font-weight: 550; }
+.native-task-execution label { display: grid; min-width: 0; gap: 6px; }
+.native-task-execution :is(input,textarea,select) { width: 100%; min-width: 0; }
+.native-task-expectation, .native-task-evidence, .native-task-attempt { display: grid; min-width: 0; gap: 10px; padding-top: 12px; border-top: 1px solid var(--border); }
+.native-task-execution :is(code,pre,.native-task-path) { font-family: var(--mono); overflow-wrap: anywhere; white-space: pre-wrap; }
+.native-task-execution pre { max-height: 220px; overflow: auto; margin: 0; line-height: 1.6; }
+.native-task-execution summary { cursor: pointer; min-height: 32px; padding: 6px 0; }
+.native-task-materials { display: grid; gap: 8px; }
+.native-task-materials label { display: flex; align-items: flex-start; gap: 8px; }
+.native-task-materials input { width: auto; flex: none; }
+.native-task-materials span { min-width: 0; overflow-wrap: anywhere; }
+.native-task-materials small { display: block; color: var(--ink-2); line-height: 1.5; }
+.native-task-execution .native-task-feedback { min-height: 2lh; }
+.native-task-execution [role=alert] { color: var(--down); }
+@media (pointer: coarse) { .native-task-execution :is(button,summary), .native-task-materials label { min-height: 44px; } }
+@media (max-width: 420px) { .native-task-execution { padding: 10px; } .native-task-execution fieldset { padding: 8px; } }

@@ -31,6 +31,9 @@ export function installDesktopRoutes(dependencies: DesktopRouteDependencies): vo
   const { settings, providerModels, manager, projects, plans, local, host, diagnostics, previewRoot, withSettingsSnapshot } = dependencies;
   const handler = (channel: string, operation: (input: unknown) => unknown) => host.handle(channel, operation);
   const pendingSubmissions = new Map<string, { cancelled: boolean }>();
+  let deckNavigation = 0;
+  let taskNavigation: BootstrapResult['taskNavigation'];
+  let workbenchNavigation = 0;
   const preferences = new ChatPreferencesStore(local);
   const projectRegistry = dependencies.projectRegistry ?? new ProjectRegistry(local, projects);
   const publishProjectDiagnostics = () => host.broadcast({ type: 'project-diagnostics-updated', diagnostics: projectRegistry.diagnostics() });
@@ -74,7 +77,7 @@ export function installDesktopRoutes(dependencies: DesktopRouteDependencies): vo
     try { chatPreferences = await preferences.load(); }
     catch { preferenceDiagnostics.push('聊天整理偏好读取失败，暂不可整理；原记录未覆盖，聊天历史仍可读取。'); }
     const listedPlans = await plans.listPlans();
-    return { settings: settings.publicSettings(), sessions: sessions.records, taskSessions: taskSessions.records, agentSessions: agentSessions.records, ...(chatPreferences ? { chatPreferences } : {}), projects: projects.list(), projectDiagnostics: projectRegistry.diagnostics(), plans: listedPlans, diagnostics: [...diagnostics, ...settings.diagnostics, ...(providerModels?.diagnostics ?? []), ...sessions.diagnostics.map(issue => issue.reason), ...taskSessions.diagnostics.map(issue => issue.reason), ...agentSessions.diagnostics.map(issue => issue.reason), ...preferenceDiagnostics], dataRootLabel: previewRoot };
+    return { settings: settings.publicSettings(), sessions: sessions.records, taskSessions: taskSessions.records, agentSessions: agentSessions.records, ...(chatPreferences ? { chatPreferences } : {}), projects: projects.list(), projectDiagnostics: projectRegistry.diagnostics(), plans: listedPlans, ...(taskNavigation ? { taskNavigation } : {}), diagnostics: [...diagnostics, ...settings.diagnostics, ...(providerModels?.diagnostics ?? []), ...sessions.diagnostics.map(issue => issue.reason), ...taskSessions.diagnostics.map(issue => issue.reason), ...agentSessions.diagnostics.map(issue => issue.reason), ...preferenceDiagnostics], dataRootLabel: previewRoot };
   });
   handler('create-session', async input => {
     const value = payload(input, ['title', 'scope']);
@@ -179,15 +182,22 @@ export function installDesktopRoutes(dependencies: DesktopRouteDependencies): vo
     const value = payload(input, ['projectID', 'referenceID']);
     return projects.preview(projectID(value.projectID), textInput(value.referenceID, 200));
   });
-  handler('create-plan', input => {
-    const value = payload(input, ['title', 'scope']);
-    return plans.createPlan(textInput(value.title, 600), [], planScope(value.scope));
+  handler('create-plan', async input => {
+    const value = payload(input, ['title', 'scope', 'schemaVersion']);
+    if (value.schemaVersion !== undefined && value.schemaVersion !== 1 && value.schemaVersion !== 2 && value.schemaVersion !== 3) throw new StorageError('plan-version', '计划格式版本无效。');
+    const plan = await plans.createPlan(textInput(value.title, 600), [], planScope(value.scope), { schemaVersion: value.schemaVersion as 1 | 2 | 3 | undefined });
+    host.broadcast({ type: 'plan-updated', plan });
+    return plan;
   });
-  handler('save-plan', input => {
+  handler('save-plan', async input => {
     const value = payload(input, ['plan', 'expectedVersion']);
     if (!Number.isSafeInteger(value.expectedVersion) || (value.expectedVersion as number) < 1) throw new StorageError('plan-version', '计划版本无效。');
     planScope((value.plan as PreviewPlan | undefined)?.scope);
-    return plans.savePlan(value.plan as PreviewPlan, value.expectedVersion as number);
+    const projectID = (value.plan as PreviewPlan | undefined)?.task?.project_id;
+    if (projectID && !projects.get(projectID)?.project) throw new StorageError('project-missing','请先选择并读取任务所属项目。');
+    const plan = await plans.savePlan(value.plan as PreviewPlan, value.expectedVersion as number);
+    host.broadcast({ type: 'plan-updated', plan });
+    return plan;
   });
   handler('recommendations', async input => {
     const plan = await plans.loadPlan(uuidInput(input));
@@ -204,9 +214,35 @@ export function installDesktopRoutes(dependencies: DesktopRouteDependencies): vo
     return textInput(value.text, 64 * 1024);
   });
   handler('open-deck', async input => {
-    const id = input === undefined ? undefined : uuidInput(input);
+    const navigation = ++deckNavigation;
+    const value = input !== null && typeof input === 'object' ? payload(input, ['sessionID', 'planID']) : { sessionID: input };
+    const id = value.sessionID === undefined ? undefined : uuidInput(value.sessionID);
+    const planID = value.planID === undefined ? undefined : uuidInput(value.planID);
     if (id && !await manager.loadSession(id)) throw new StorageError('missing-session', '会话不存在。');
-    await host.openDeck(id);
+    if (planID && !await plans.loadPlan(planID)) throw new StorageError('missing-plan', '任务计划不存在。');
+    if (navigation !== deckNavigation) return;
+    await host.openDeck(id, planID);
   });
-  handler('show-workbench', () => host.showWorkbench());
+  handler('deck-context', () => host.getDeckContext());
+  handler('deck-presentation', () => host.getDeckPresentation());
+  host.handle('set-deck-interaction', (input, sender) => {
+    const value = payload(input, ['busy']);
+    if (typeof value.busy !== 'boolean') throw new StorageError('invalid-input', '浮窗交互状态无效。');
+    host.setDeckInteraction(value.busy, sender);
+  });
+  handler('set-deck-collapsed', input => {
+    if (typeof input !== 'boolean') throw new StorageError('invalid-input', '浮窗状态无效。');
+    host.setDeckCollapsed(input);
+  });
+  handler('show-workbench', async input => {
+    const navigation = ++workbenchNavigation;
+    if (input === undefined) { await host.showWorkbench(); return; }
+    const planID = uuidInput(input);
+    const targetPlan = await plans.loadPlan(planID);
+    if (!targetPlan) throw new StorageError('missing-plan', '任务计划不存在。');
+    if (navigation !== workbenchNavigation) return;
+    taskNavigation = { revision: (taskNavigation?.revision ?? 0) + 1, planID, reference: targetPlan.scope ? { kind: 'project', projectID: targetPlan.scope.project_id, taskID: targetPlan.scope.task_id } : { kind: 'local', planID } };
+    await host.showWorkbench();
+    if (navigation === workbenchNavigation) host.broadcast({ type: 'workbench-task-requested', ...taskNavigation });
+  });
 }

@@ -1,14 +1,17 @@
+import { TaskRecordStore } from '../storage/task-record-store.js';
 import type { SessionManager } from '../sessions/session-manager.js';
 import type { FileTurnRef } from '../sessions/file-task-schema.js';
 import { assertFileTaskIdle, assertLegacyFileTaskIdle } from '../sessions/file-task-lifecycle.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import type { DecisionRecommendation, HistoryDiagnostic, ModelSelection, PlanWorkItem, PreviewPlan, PreviewPlanScope } from '../../shared/types.js';
+import type { DecisionRecommendation, HistoryDiagnostic, ModelSelection, PlanWorkItem, PreviewPlan, PreviewPlanScope, TaskContent } from '../../shared/types.js';
 import type { AcceptanceRecord, ApprovalRequest, AuthorizationInput, DriverRef, ExecutionResult, ExecutionSpec, MaterialRef, PermissionExchange, PreparedAuthorization, StartReceipt, TaskSessionRecord, TaskSessionRef, TaskTurnRecord, TaskTurnRef, WorkspaceRef } from '../../shared/task-execution.js';
 import { PreviewRecordStore } from '../storage/preview-record-store.js';
 import { safeRoot, StorageError, withExclusiveLock } from '../storage/private-storage.js';
 import { isUUID, validateModel } from '../sessions/session-schema.js';
 import { DecisionEngine } from './decision-engine.js';
+import { validatePreviewPlan as validate, validatePreviewPlanScope, type CreatePreviewPlanOptions } from './plan-schema.js';
+export { validatePreviewPlanScope };
 import { EXECUTION_APPROVAL_TTL_MS, type ApprovalService } from '../approvals/approval-service.js';
 import { boundedString, canonicalDigest, exactObject, validateTaskTurnRef } from '../storage/execution-records.js';
 import { ExecutionAcceptanceStore } from './execution-acceptance-store.js';
@@ -31,6 +34,7 @@ type PlanStore = Pick<PreviewRecordStore<PreviewPlan>, 'load' | 'list' | 'save'>
 type AcceptanceStore = Pick<ExecutionAcceptanceStore, 'load' | 'list' | 'find' | 'record'>;
 type PlanDecisionEngine = Pick<DecisionEngine, 'recommend'>;
 export interface TaskOrchestratorDependencies {
+  formalTasks?: boolean;
   fileManager?: Pick<SessionManager, 'loadFileTaskSession' | 'verifyFileResult'>;
   planStore?: PlanStore;
   acceptanceStore?: AcceptanceStore;
@@ -62,41 +66,10 @@ function validateAuthorization(input: AuthorizationInput): void {
   validateModel(input.model); validateTaskTools(input.tools);
 }
 
-export function validatePreviewPlanScope(value: unknown): asserts value is PreviewPlanScope {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new StorageError('invalid-plan-scope', '预览计划关联无效。');
-  const scope = value as Record<string, unknown>;
-  if (Object.keys(scope).length !== 2 || !Object.keys(scope).every(key => ['project_id', 'task_id'].includes(key)) || typeof scope.project_id !== 'string' || !/^project-[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/.test(scope.project_id) || typeof scope.task_id !== 'string' || !/^task-\d{3,}$/.test(scope.task_id)) throw new StorageError('invalid-plan-scope', '预览计划项目或任务标识无效。');
-}
-
-function validate(value: unknown): PreviewPlan {
-  const plan = value as PreviewPlan;
-  if (!plan || plan.schema_version !== 1 || plan.kind !== 'electron_preview_plan' || !isUUID(plan.id) || typeof plan.title !== 'string' || !plan.title.trim() || Buffer.byteLength(plan.title) > 600 || !Number.isSafeInteger(plan.version) || plan.version < 1 || !Number.isFinite(Date.parse(plan.created_at)) || !Number.isFinite(Date.parse(plan.updated_at)) || !Array.isArray(plan.work_items) || plan.work_items.length > 1000 || Object.keys(plan).some(key => !['schema_version', 'kind', 'id', 'title', 'version', 'created_at', 'updated_at', 'scope', 'work_items'].includes(key))) throw new StorageError('invalid-plan', '预览计划无效。');
-  if (plan.scope !== undefined) validatePreviewPlanScope(plan.scope);
-  const ids = new Set<string>();
-  for (const item of plan.work_items) {
-    if (!isUUID(item.id) || ids.has(item.id) || typeof item.title !== 'string' || !item.title.trim() || item.title.length > 600 || !['discussion', 'implementation', 'validation'].includes(item.kind) || !['human', 'chat', 'unassigned'].includes(item.assignee) || typeof item.expected_result !== 'string' || !item.expected_result.trim() || item.expected_result.length > 4096 || !['planned', 'completed'].includes(item.status) || !Array.isArray(item.dependencies) || Object.keys(item).some(key => !['id', 'title', 'kind', 'assignee', 'model', 'expected_result', 'dependencies', 'status'].includes(key))) throw new StorageError('invalid-plan', '预览工作项无效。');
-    if (item.model !== undefined) { if (item.assignee !== 'chat') throw new StorageError('invalid-plan', '只有聊天工作项可以指定模型。'); validateModel(item.model); }
-    if (item.assignee === 'chat' && (item.kind !== 'discussion' || !item.model)) throw new StorageError('invalid-plan', '聊天分派仅支持指定模型的讨论工作项。');
-    ids.add(item.id);
-  }
-  const byID = new Map(plan.work_items.map(item => [item.id, item]));
-  const visiting = new Set<string>(); const visited = new Set<string>();
-  const visit = (id: string) => {
-    if (visiting.has(id)) throw new StorageError('dependency-cycle', '工作项依赖包含循环。');
-    if (visited.has(id)) return;
-    visiting.add(id);
-    const item = byID.get(id)!;
-    if (new Set(item.dependencies).size !== item.dependencies.length) throw new StorageError('invalid-plan', '工作项依赖重复。');
-    for (const dependency of item.dependencies) { if (!ids.has(dependency)) throw new StorageError('invalid-plan', '工作项依赖不存在。'); visit(dependency); }
-    visiting.delete(id); visited.add(id);
-  };
-  for (const id of ids) visit(id);
-  return plan;
-}
-
 /** Saving or editing a plan has no execution dependency and cannot send a request. */
 export class TaskOrchestrator {
   private readonly store: PlanStore;
+  private readonly ownsPlanStore: boolean;
   private readonly acceptance: AcceptanceStore;
   private readonly decisionEngine: PlanDecisionEngine;
   private readonly fileManager?: TaskOrchestratorDependencies['fileManager'];
@@ -107,7 +80,8 @@ export class TaskOrchestrator {
   constructor(previewRoot: string, dependencies: TaskOrchestratorDependencies = {}) {
     this.root = safeRoot(previewRoot);
     this.fileManager = dependencies.fileManager; this.fileAcceptance = new ExecutionAcceptanceStore(previewRoot);
-    this.store = dependencies.planStore ?? new PreviewRecordStore(previewRoot, 'preview-plans', validate);
+    this.ownsPlanStore = dependencies.planStore === undefined;
+    this.store = dependencies.planStore ?? (dependencies.formalTasks ? new TaskRecordStore(previewRoot) : new PreviewRecordStore(previewRoot, 'preview-plans', validate));
     this.acceptance = dependencies.acceptanceStore ?? new ExecutionAcceptanceStore(previewRoot);
     this.decisionEngine = dependencies.decisionEngine ?? new DecisionEngine();
   }
@@ -122,16 +96,43 @@ export class TaskOrchestrator {
       return this.fileAcceptance.recordFile({ ...frozen, actor: this.execution?.actor?.() ?? 'local-user', now: this.execution?.now?.() ?? new Date() });
     });
   }
+  private nativeWorkItemPolicy?: {
+    assertPlanIdle(plan: PreviewPlan): Promise<void>;
+    assertProjectIdle(scope: PreviewPlanScope): Promise<void>;
+  };
+  configureNativeWorkItems(policy: NonNullable<TaskOrchestrator['nativeWorkItemPolicy']>): void {
+    if (this.nativeWorkItemPolicy) throw new StorageError('conflict', '原生工作项门禁已配置。');
+    this.nativeWorkItemPolicy = policy;
+  }
   configureExecution(configuration: TaskExecutionConfiguration): void {
     if (this.execution) throw new StorageError('conflict', '任务执行依赖已配置。');
     this.execution = configuration;
   }
-  async createPlan(title: string, workItems: PlanWorkItem[] = [], scope?: PreviewPlanScope): Promise<PreviewPlan> {
+  async createPlan(title: string, workItems: PlanWorkItem[] = [], scope?: PreviewPlanScope, options: CreatePreviewPlanOptions = {}): Promise<PreviewPlan> {
+    if (!options || typeof options !== 'object' || Array.isArray(options) || Object.keys(options).some(key => key !== 'schemaVersion') || options.schemaVersion !== undefined && ![1, 2, 3].includes(options.schemaVersion)) throw new StorageError('invalid-plan', '预览计划版本无效。');
     const now = new Date().toISOString();
-    const plan: PreviewPlan = { schema_version: 1, kind: 'electron_preview_plan', id: randomUUID(), title: title.trim(), version: 1, created_at: now, updated_at: now, ...(scope !== undefined ? { scope: structuredClone(scope) } : {}), work_items: structuredClone(workItems) };
+    const plan: PreviewPlan = { schema_version: options.schemaVersion ?? 1, kind: 'electron_preview_plan', id: randomUUID(), title: title.trim(), version: 1, created_at: now, updated_at: now, ...(scope !== undefined ? { scope: structuredClone(scope) } : {}), ...(options.schemaVersion === 3 ? { task: { goal: '', completion_conditions: [], materials: [], chat_refs: [] } } : {}), work_items: structuredClone(workItems) };
     validate(plan);
     if (!scope || !this.execution) return this.store.save(plan, false);
     return this.taskGate(scope, async () => { await this.assertTaskIdle(scope); return this.store.save(plan, false); });
+  }
+  /** One complete task write, including drafts without work items or completion conditions. */
+  async createTaskDraft(input: { id: string; title: string; task: TaskContent }): Promise<PreviewPlan> {
+    if (!isUUID(input.id) || input.task.creation_receipt?.requestID !== input.id) throw new StorageError('chat-task-input','任务创建回执无效。');
+    return this.planGate(input.id, async () => {
+      const existing = await this.store.load(input.id);
+      if (existing) {
+        if (existing.task?.creation_receipt?.requestDigest !== input.task.creation_receipt!.requestDigest) throw new StorageError('chat-task-replay','相同创建标识不能用于不同内容。');
+        return existing;
+      }
+      const now = new Date().toISOString();
+      const plan: PreviewPlan = { schema_version: 3, kind: 'electron_preview_plan', id: input.id, title: input.title, version: 1, created_at: now, updated_at: now, task: structuredClone(input.task), work_items: [] };
+      validate(plan); return this.store.save(plan,false);
+    });
+  }
+  async createTaskFromChat(input: { id: string; title: string; task: TaskContent }): Promise<PreviewPlan> {
+    if (!input.task.chat_origin || input.task.chat_origin.requestID !== input.id) throw new StorageError('chat-task-input','任务聊天来源无效。');
+    return this.createTaskDraft(input);
   }
   loadPlan(id: string): Promise<PreviewPlan | undefined> { return this.store.load(id); }
   listPlans(): Promise<PreviewPlan[]> { return this.store.list(); }
@@ -139,9 +140,41 @@ export class TaskOrchestrator {
     validate(plan);
     const save = async () => {
       const original = await this.store.load(plan.id);
+      if (JSON.stringify(original?.task?.creation_receipt ?? null) !== JSON.stringify(plan.task?.creation_receipt ?? null)) throw new StorageError('protected-task-receipt','任务创建回执不可通过普通编辑修改。');
+      if (JSON.stringify(original?.task?.chat_origin ?? null) !== JSON.stringify(plan.task?.chat_origin ?? null)) throw new StorageError('protected-chat-origin','聊天创建来源不可通过普通编辑修改。');
+      if (JSON.stringify(original?.task?.context_receipts ?? []) !== JSON.stringify(plan.task?.context_receipts ?? [])) throw new StorageError('protected-context-receipt', '上下文确认记录不可通过普通编辑修改。');
+      const previousScreens = new Map((original?.task?.materials ?? []).filter(m => m.source.kind === 'screen').map(m => [m.id, m]));
+      for (const material of plan.task?.materials ?? []) if (material.source.kind === 'screen') {
+        const previous = previousScreens.get(material.id);
+        if (!previous || canonicalDigest({ source: previous.source, clues: previous.screen_clues ?? [], confirmation: previous.confirmation_id ?? '' }) !== canonicalDigest({ source: material.source, clues: material.screen_clues ?? [], confirmation: material.confirmation_id ?? '' })) throw new StorageError('protected-context-source', '屏幕来源须通过确认上下文保存。');
+      }
+      return this.persistPlan(plan, expectedVersion);
+    };
+    return plan.scope ? this.taskGate(plan.scope, save) : this.planGate(plan.id, save);
+  }
+  /** Trusted host transaction. Shares the same gate as ordinary edits; no nested savePlan calls. */
+  async transactPlan<T>(id: string, operation: (current: PreviewPlan) => Promise<{ plan?: PreviewPlan; value: T }>): Promise<{ value: T; plan?: PreviewPlan }> {
+    const initial = await this.store.load(id);
+    if (!initial) throw new StorageError('missing-plan', '任务计划不存在。');
+    const transact = async () => {
+      const current = await this.store.load(id);
+      if (!current) throw new StorageError('missing-plan', '任务计划不存在。');
+      const result = await operation(structuredClone(current));
+      if (!result.plan) return { value: result.value };
+      if (result.plan.id !== id) throw new StorageError('invalid-plan', '任务事务不能切换计划。');
+      validate(result.plan);
+      return { value: result.value, plan: await this.persistPlan(result.plan, current.version) };
+    };
+    return initial.scope ? this.taskGate(initial.scope, transact) : this.planGate(id, transact);
+  }
+  private async persistPlan(plan: PreviewPlan, expectedVersion: number): Promise<PreviewPlan> {
+      const original = await this.store.load(plan.id);
       if (!original) throw new StorageError('missing-plan', '预览计划不存在。');
+      await this.nativeWorkItemPolicy?.assertPlanIdle(original);
       if (original.version !== expectedVersion || plan.version !== expectedVersion) throw new StorageError('plan-conflict', '预览计划版本冲突。');
       if (original.created_at !== plan.created_at || original.kind !== plan.kind) throw new StorageError('invalid-plan', '预览计划身份不可更改。');
+      // The submitted schema_version is the explicit upgrade request; reads retain v1.
+      if (original.schema_version > plan.schema_version) throw new StorageError('plan-schema-downgrade', '已升级的计划不能降回旧版本。');
       if (original.scope?.project_id !== plan.scope?.project_id || original.scope?.task_id !== plan.scope?.task_id) throw new StorageError('plan-scope-changed', '预览计划关联不可添加、移除或更改；独立计划仍保持独立。');
       if (original.scope) await assertFileTaskIdle(this.root, original.scope);
       if (original.scope && this.execution) {
@@ -156,8 +189,6 @@ export class TaskOrchestrator {
         }
       }
       return this.store.save({ ...structuredClone(plan), version: expectedVersion + 1, updated_at: new Date().toISOString() }, true);
-    };
-    return plan.scope ? this.taskGate(plan.scope, save) : save();
   }
   async recommendations(plan: PreviewPlan): Promise<Array<{ workItemID: string; recommendation: DecisionRecommendation }>> {
     validate(plan);
@@ -357,6 +388,7 @@ export class TaskOrchestrator {
     return listing.records;
   }
   private async assertTaskIdle(scope: PreviewPlanScope, except?: TaskTurnRef): Promise<void> {
+    await this.nativeWorkItemPolicy?.assertProjectIdle(scope);
     await assertFileTaskIdle(this.root, scope);
     for (const session of await this.scan(scope)) for (const turn of session.turns) if (unresolved(turn) && (!except || !same(refOf(session, turn), except))) throw new StorageError(turn.state === 'unknown' ? 'execution-unknown' : 'conflict', '同一任务有未决执行，请取消或核对原轮次。');
   }
@@ -369,6 +401,7 @@ export class TaskOrchestrator {
     if (!item) throw new StorageError('invalid-input', '计划工作项不存在。');
     if (item.assignee === 'human') throw new StorageError('unsupported', '人工工作项不能由执行器启动。');
     if (item.assignee === 'chat') throw new StorageError('unsupported', '聊天工作项暂未接入任务执行；请继续使用普通聊天。');
+    if (item.assignee === 'agent') throw new StorageError('unsupported', 'Agent 分工目前仅保存计划，不能由旧任务执行入口启动。');
     return item;
   }
   private async materials(scope: PreviewPlanScope, ids: string[]): Promise<Array<{ reference: MaterialRef; bytes: Uint8Array }>> {
@@ -433,6 +466,13 @@ export class TaskOrchestrator {
         if (expired) await this.config().manager.failPreparedTaskTurn(ref, '准备授权已过期，请创建新轮次重新申请。');
       }
     }
+  }
+  private planGate<T>(planID: string, operation: () => Promise<T>): Promise<T> {
+    const key = `plan-${planID}`, prior = this.taskQueues.get(key) ?? Promise.resolve();
+    const run = prior.catch(() => undefined).then(() => this.ownsPlanStore ? withExclusiveLock(join(this.root, `.${key}.lock`), operation) : operation());
+    this.taskQueues.set(key, run);
+    void run.finally(() => { if (this.taskQueues.get(key) === run) this.taskQueues.delete(key); }).catch(() => undefined);
+    return run;
   }
   private taskGate<T>(scope: PreviewPlanScope, operation: () => Promise<T>): Promise<T> {
     validatePreviewPlanScope(scope); const key = canonicalDigest(scope); const prior = this.taskQueues.get(key) ?? Promise.resolve();

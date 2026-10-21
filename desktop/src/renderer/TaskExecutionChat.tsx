@@ -12,6 +12,7 @@ interface Props {
   task: Pick<TaskDTO, 'project_id' | 'task_id' | 'title'>;
   projectName?: string;
   sessionID: string;
+  focusMessageID?: string;
   onSessionChange: (session: TaskSessionRecord) => void;
   onClose?: () => void;
 }
@@ -52,7 +53,7 @@ export function TaskExecutionState({ state, acceptance }: { state: TaskTurnState
 }
 
 /** Task-v2 execution cards embedded in chat; chat-v1 history stays separate. */
-export function TaskExecutionHistory({ api, task, projectName, sessionID, onSessionChange, onClose }: Props) {
+export function TaskExecutionHistory({ api, task, projectName, sessionID, focusMessageID, onSessionChange, onClose }: Props) {
   const [record, setRecord] = useState<TaskSessionRecord | null>(null);
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState('');
@@ -72,6 +73,14 @@ export function TaskExecutionHistory({ api, task, projectName, sessionID, onSess
   const stoppingRef = useRef(false);
   const content = useRef<HTMLElement>(null);
   const selected = record?.conversation_id === sessionID && record.scope.project_id === task.project_id && record.scope.task_id === task.task_id ? record : undefined;
+  useEffect(() => {
+    if (!focusMessageID || !selected) return;
+    const frame = requestAnimationFrame(() => {
+      const node = [...(content.current?.querySelectorAll<HTMLElement>('[data-message-id]') ?? [])].find(element => element.dataset.messageId === focusMessageID);
+      node?.scrollIntoView({ block: 'center' }); node?.focus({ preventScroll: true });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [focusMessageID, selected?.revision]);
   const readonlyHistory = !!selected?.turns.some(legacySimulation);
   const current = (source = identity) => mounted.current && source === identityRef.current;
   const receive = (incoming: TaskSessionRecord, source = identity) => {
@@ -241,13 +250,13 @@ export function TaskExecutionHistory({ api, task, projectName, sessionID, onSess
             const output = selected.messages.filter(message => message.turn_id === turn.turn_id && message.role === 'assistant').map(message => message.text).join('\n');
             const elapsed = Math.max(0, Math.floor(((!readonlyHistory && unresolved(turn) ? now : Date.parse(turn.updated_at)) - Date.parse(turn.created_at)) / 1000));
             return <article className="execution-attempt" key={turn.turn_id} data-state={turn.state} aria-label={`历史工作项：${spec.title}`}>
-              {user && <div className="message user task-history-input"><div className="message-header"><strong>{simulation ? '试运行输入（历史记录）' : '执行输入（历史记录）'}</strong><time>{formatDate(user.created_at)}</time></div><div className="message-body">{user.text}</div></div>}
+              {user && <div className="message user task-history-input" data-message-id={user.message_id} tabIndex={-1}><div className="message-header"><strong>{simulation ? '试运行输入（历史记录）' : '执行输入（历史记录）'}</strong><time>{formatDate(user.created_at)}</time></div><div className="message-body">{user.text}</div></div>}
               <div className="execution-step-header" id={`control-${turn.turn_id}`} data-pending-target="" tabIndex={-1}><FileText size={16} /><strong>{spec.title}</strong>{simulation && <span className="simulation-badge">模拟</span>}<TaskExecutionState state={turn.state} acceptance={value?.acceptance?.decision} /></div>
               <div className="execution-receipt"><span>{simulation ? '模拟试运行' : '外部执行记录'} · 计划 v{spec.work.planVersion}</span><span>请求 {turn.requested_model.provider_id}/{turn.requested_model.model_id}{turn.requested_model.variant ? ` · ${turn.requested_model.variant}` : ''}{turn.observed_model ? ` · 响应 ${turn.observed_model.provider_id}/${turn.observed_model.model_id}` : ''}</span><span><Clock3 size={11} />{elapsed} 秒</span><time>{formatDate(turn.created_at)}</time></div>
               <details className="execution-scope"><summary>查看本次冻结范围</summary><dl><dt>工作区</dt><dd>{projectName ?? '原绑定项目'} · 计划 v{spec.work.planVersion}</dd><dt>预期结果</dt><dd>{spec.expectedResult}</dd><dt>材料</dt><dd>{spec.materials.length ? `${spec.materials.length} 项明确材料` : '只使用上述输入，没有附加项目材料'}</dd><dt>执行器</dt><dd>{spec.driver.driverID}{simulation && ' · 模拟，不调用模型'}</dd><dt>工具范围</dt><dd>{spec.tools.kind === 'none' ? '无工具' : `${simulation ? '仅模拟 · ' : ''}读取 ${spec.tools.readRoots.join(', ')}；写入 ${spec.tools.writeRoots.join(', ')}；命令 ${spec.tools.commands.length} 项`}</dd></dl></details>
               {turn.state === 'prepared' && <section className="execution-card execution-approval" id={`approval-${turn.turn_id}`} data-pending-target="" tabIndex={-1} aria-label={simulation ? '尚未启动的试运行' : '执行授权'}><div className="execution-card-title"><ShieldCheck size={16} /><h3>{simulation ? '尚未启动的试运行' : '执行授权'}</h3>{simulation && <span className="simulation-badge">模拟</span>}</div><p>{readonlyHistory ? '这份准备记录仅供查看已保存的输入与冻结范围。' : '仅发送以上输入；不读取项目文件，不调用工具。批准后仍需单独开始。'}</p>{!simulation && authorization && <p className="execution-feedback" role="status">{authorization.invalidation ? `授权已失效：${authorization.invalidation.reason}` : !validApproval(authorization, now) ? '授权已过期，请取消准备后重新申请。' : authorization.state === 'approved' ? '批准已保存，尚未发送。' : authorization.state === 'rejected' ? '你已拒绝这次执行。' : '等待你的决定。'}<span className="execution-expiry">有效至 {formatDate(authorization.expires_at)}</span></p>}{!readonlyHistory && !simulation && authorization && validApproval(authorization, now) && spec.tools.kind === 'none' && <div className="execution-actions">{authorization.state === 'pending' ? <><button className="button primary execution-action" disabled={!!pending} onClick={() => void decide(authorization, 'approve')}>批准这次执行</button><button className="button execution-action" disabled={!!pending} onClick={() => void decide(authorization, 'reject')}>拒绝</button></> : authorization.state === 'approved' ? <button className="button primary execution-action" disabled={!!pending} onClick={() => void start(selected, turn, authorization)}>{pending === `start:${turn.turn_id}` ? '正在提交…' : '开始这次执行'}</button> : null}</div>}{authorization && <p className="execution-authorization-receipt">原范围决定：{authorization.state === 'approved' ? '已批准' : authorization.state === 'rejected' ? '已拒绝' : '未决定'}{authorization.state !== 'pending' && ` · ${formatDate(authorization.decided_at)}`}{authorization.invalidation && ` · 已失效：${authorization.invalidation.reason}`}</p>}{!readonlyHistory && <div className="execution-actions"><button className="button small execution-action" disabled={!!stopping} aria-busy={stopping === turn.turn_id} onClick={() => void cancel(selected, turn)}>{stopping === turn.turn_id ? '确认取消…' : '取消准备'}</button></div>}</section>}
               {turn.state !== 'prepared' && authorization && authorization.state !== 'pending' && <p className="execution-authorization-receipt"><ShieldCheck size={13} /><span>{authorization.state === 'approved' ? '你已批准本次范围' : '你已拒绝本次范围'} · {formatDate(authorization.decided_at)}{authorization.invalidation && ` · ${authorization.invalidation.reason}`}</span></p>}
-              {output && <section className="execution-output" aria-label={simulation ? '试运行输出' : '执行输出'}><div className="message-header"><strong>{simulation ? '试运行输出' : '执行输出'}</strong>{simulation && <span className="simulation-badge">模拟</span>}</div><Markdown text={output} /></section>}
+              {output && <section className="execution-output" data-message-id={selected.messages.find(message => message.turn_id === turn.turn_id && message.role === 'assistant')?.message_id} tabIndex={-1} aria-label={simulation ? '试运行输出' : '执行输出'}><div className="message-header"><strong>{simulation ? '试运行输出' : '执行输出'}</strong>{simulation && <span className="simulation-badge">模拟</span>}</div><Markdown text={output} /></section>}
               {turn.execution.permissions.map((permission, permissionIndex) => {
                 const request = requests.find(candidate => candidate.target.kind === 'tool' && candidate.target.externalRequestID === permission.externalRequestID);
                 const canReply = !readonlyHistory && !!request && request.state !== 'pending' && validApproval(request, now) && !permission.delivery && turn.state === 'awaiting_permission';

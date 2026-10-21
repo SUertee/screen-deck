@@ -11,3 +11,4 @@ export * from './sessions/task-execution-driver.js';
 export * from './sessions/task-session-history-store.js';
 export * from './sessions/agent-chat-driver.js';
 export * from './sessions/agent-session-history-store.js';
+export * from './agents/agent-chat-registry.js';

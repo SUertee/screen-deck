@@ -11,6 +11,7 @@ import { installDesktopRoutes } from '../../src/main/desktop-routes.js';
 import type { ElectronHost } from '../../src/main/electron-host.js';
 import type { ProviderSettingsStore } from '../../src/main/provider-settings.js';
 import type { LocalState } from '../../src/main/local-state.js';
+import type { DesktopEvent } from '../../src/shared/desktop-api.js';
 
 const scope: PreviewPlanScope = { project_id: 'project-abcdef00-0000-0000-0000-000000000000', task_id: 'task-001' };
 const fixture = (): ProjectWorkspaceResult => ({
@@ -21,12 +22,15 @@ const fixture = (): ProjectWorkspaceResult => ({
 async function harness() {
   const root = await mkdtemp(join(await realpath(tmpdir()), 'screendeck-plan-routes-test-'));
   const handlers = new Map<string, (input: unknown) => unknown>(); const registered = new Map<string, ProjectWorkspaceResult>();
-  const host = { handle: (channel: string, handler: (input: unknown) => unknown) => handlers.set(channel, handler) } as unknown as ElectronHost;
+  const events: DesktopEvent[] = [];
+  const opened: Array<{ sessionID?: string; planID?: string }> = [];
+  const collapsed: boolean[] = [];
+  const host = { handle: (channel: string, handler: (input: unknown) => unknown) => handlers.set(channel, handler), broadcast: (event: DesktopEvent) => events.push(event), openDeck: async (sessionID?: string, planID?: string) => { opened.push({ sessionID, planID }); }, setDeckCollapsed: (value: boolean) => collapsed.push(value) } as unknown as ElectronHost;
   const projects = { get: (id: string) => registered.get(id) } as unknown as ProjectWorkspaceReader;
   const plans = new TaskOrchestrator(root);
   installDesktopRoutes({ host, projects, plans, settings: {} as ProviderSettingsStore, manager: {} as SessionManager, local: {} as LocalState, diagnostics: [], previewRoot: root, withSettingsSnapshot: (_snapshot, operation) => operation() });
   const invoke = async (channel: string, input: unknown): Promise<unknown> => handlers.get(channel)!(input);
-  return { registered, plans, invoke };
+  return { registered, plans, invoke, events, opened, collapsed };
 }
 
 test('create-plan IPC accepts an explicit object and persists only a registered current task scope', async () => {
@@ -36,6 +40,46 @@ test('create-plan IPC accepts an explicit object and persists only a registered 
   await assert.rejects(invoke('create-plan', 'Old string payload'), /参数无效/);
   await assert.rejects(invoke('create-plan', { title: 'Unexpected data', scope, destination: '/outside' }), /参数无效/);
   assert.equal((await plans.listPlans()).length, 2);
+});
+
+test('Deck v2 IPC broadcasts only persisted versions, rejects invalid schemas and stale writes', async () => {
+  const { plans, invoke, events } = await harness();
+  for (const schemaVersion of [0, 4, '2', null]) await assert.rejects(invoke('create-plan', { title: 'Invalid', schemaVersion }), /版本/);
+  assert.equal(events.length, 0);
+  const plan = await invoke('create-plan', { title: 'Deck task', schemaVersion: 2 }) as PreviewPlan;
+  assert.equal(plan.schema_version, 2);
+  assert.deepEqual(events, [{ type: 'plan-updated', plan }]);
+  const saved = await invoke('save-plan', { plan: { ...plan, title: 'Changed title' }, expectedVersion: plan.version }) as PreviewPlan;
+  assert.equal(saved.version, 2);
+  assert.deepEqual(events[1], { type: 'plan-updated', plan: saved });
+  await assert.rejects(invoke('save-plan', { plan: { ...plan, title: 'Stale title' }, expectedVersion: plan.version }), /版本冲突/);
+  assert.equal(events.length, 2);
+  assert.equal((await plans.loadPlan(plan.id))?.title, 'Changed title');
+});
+
+test('Deck navigation validates existing plans and collapse accepts only a boolean', async () => {
+  const { invoke, opened, collapsed } = await harness();
+  const plan = await invoke('create-plan', { title: 'Target task', schemaVersion: 2 }) as PreviewPlan;
+  await invoke('open-deck', { planID: plan.id });
+  assert.deepEqual(opened, [{ sessionID: undefined, planID: plan.id }]);
+  await assert.rejects(invoke('open-deck', { planID: '00000000-0000-4000-8000-000000000000' }), /不存在/);
+  await assert.rejects(invoke('open-deck', { planID: plan.id, url: 'https://invalid.example' }), /参数无效/);
+  for (const value of [null, 1, 'true', { height: 1 }]) await assert.rejects(invoke('set-deck-collapsed', value), /无效/);
+  await invoke('set-deck-collapsed', true); await invoke('set-deck-collapsed', false);
+  assert.deepEqual(collapsed, [true, false]);
+});
+
+test('a slow earlier Deck target cannot replace a newer navigation after asynchronous validation', async () => {
+  const { invoke, plans, opened } = await harness();
+  const first = await plans.createPlan('Slow target'), second = await plans.createPlan('Latest target');
+  const load = plans.loadPlan.bind(plans);
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  plans.loadPlan = async id => { if (id === first.id) await held; return load(id); };
+  const earlier = invoke('open-deck', { planID: first.id });
+  await invoke('open-deck', { planID: second.id });
+  release(); await earlier;
+  assert.deepEqual(opened, [{ sessionID: undefined, planID: second.id }]);
 });
 
 test('create-plan IPC rejects unregistered, missing, malformed, stale and error task associations before writing', async () => {

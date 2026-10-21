@@ -152,6 +152,32 @@ test('rejected startup remains a recorded human decision and settles prepared Tu
   } finally { await f.manager.shutdown(); }
 });
 
+test('an explicit v1 to v2 plan upgrade invalidates the old approved Turn without starting it', async () => {
+  const f = await fixture();
+  try {
+    const prepared = await f.plans.requestExecutionAuthorization(f.input());
+    await f.plans.decideApproval({ requestID: prepared.request.id, choice: 'approve' });
+    const upgraded = await f.plans.savePlan({ ...f.plan, schema_version: 2 }, f.plan.version);
+    assert.equal(upgraded.id, f.plan.id); assert.equal(upgraded.version, 2); assert.equal(upgraded.schema_version, 2);
+    assert.equal((await f.manager.getTaskTurn(prepared.turn)).state, 'failed');
+    assert.ok((await f.approvals.loadExecutionApproval(prepared.request.id))?.invalidation);
+    assert.equal((await f.plans.startExecution({ turn: prepared.turn, approvalID: prepared.request.id })).status, 'not-started');
+    await assert.rejects(f.plans.requestExecutionAuthorization(f.input()), /版本已变化/);
+    assert.deepEqual(f.driver.counts, { created: 0, submitted: 0, permissions: 0 });
+  } finally { await f.manager.shutdown(); }
+});
+
+test('v2 Agent assignments remain planning metadata and cannot enter the old execution path', async () => {
+  const f = await fixture();
+  try {
+    const upgraded = await f.plans.savePlan({ ...f.plan, schema_version: 2, work_items: f.plan.work_items.map(item => ({ ...item, assignee: 'agent' as const, agentID: 'opencode', expected_result: '' })) }, 1);
+    assert.deepEqual(f.driver.counts, { created: 0, submitted: 0, permissions: 0 });
+    await assert.rejects(f.plans.requestExecutionAuthorization({ ...f.input(), expectedPlanVersion: upgraded.version }), /仅保存计划/);
+    assert.equal((await f.manager.loadTaskSession({ format: 'task-v2', sessionID: f.session.conversation_id }))?.turns.length, 0);
+    assert.deepEqual(f.driver.counts, { created: 0, submitted: 0, permissions: 0 });
+  } finally { await f.manager.shutdown(); }
+});
+
 test('all Sessions of a task share a gate, and a second coordinator never steals an O_EXCL task lock', async () => {
   const f = await fixture();
   try {
@@ -180,6 +206,8 @@ test('unknown result blocks restart, new Session attempts, plan edits and accept
     const session = await f.manager.createTaskSession({ title: 'Another task conversation', projectID: f.scope.project_id, taskID: f.scope.task_id });
     await assert.rejects(f.plans.requestExecutionAuthorization({ ...f.input(), session: { format: 'task-v2', sessionID: session.conversation_id } }), /同一任务有未决/);
     await assert.rejects(f.plans.savePlan({ ...f.plan, title: 'Cannot edit unknown' }, 1), /未核对结果/);
+    await assert.rejects(f.plans.savePlan({ ...f.plan, schema_version: 2 }, 1), /未核对结果/);
+    assert.equal((await f.plans.loadPlan(f.plan.id))?.schema_version, 1);
     await assert.rejects(f.plans.getWorkItemReview(prepared.turn), /仅可验收/);
     assert.deepEqual(f.driver.counts, { created: 1, submitted: 1, permissions: 0 });
   } finally { await f.manager.shutdown(); }

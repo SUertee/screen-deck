@@ -1,0 +1,42 @@
+/* finesse · component · inherited ScreenDeck tokens; no new page palette or motion. */
+.agent-workspace-controls { display:flex; align-items:center; gap:6px; min-width:0; flex-wrap:wrap; }
+.agent-workspace-button,.agent-permission-picker { display:inline-flex; align-items:center; gap:6px; min-width:0; height:32px; padding:0 8px; border:1px solid transparent; border-radius:8px; color:var(--ink-2); background:transparent; font:inherit; font-size:12px; }
+.agent-workspace-button { cursor:pointer; max-width:190px; }
+.agent-workspace-button span { overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.agent-workspace-button:focus-visible,.agent-permission-picker:focus-visible { outline:2px solid var(--ink-2); outline-offset:2px; }
+.agent-workspace-button:active,.agent-permission-picker:active { background:var(--panel-2); }
+.agent-workspace-button:disabled,.agent-permission-picker:disabled,.agent-approval button:disabled { opacity:.5; cursor:not-allowed; }
+.agent-control-error { color:var(--down); font-size:12px; overflow-wrap:anywhere; }
+.agent-turn-tools { display:grid; gap:8px; margin:10px 0 4px; min-width:0; }
+.agent-tool-row { min-width:0; border:1px solid var(--border); border-radius:10px; overflow:hidden; }
+.agent-tool-row summary { display:flex; align-items:center; gap:8px; padding:9px 12px; cursor:pointer; color:var(--ink-2); font-size:12px; }
+.agent-tool-title { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.agent-tool-status { flex-shrink:0; }
+.agent-tool-row pre,.agent-approval pre { margin:0; padding:10px 12px; font-size:12px; line-height:1.6; font-family:var(--mono,monospace); max-height:240px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; color:var(--ink-1); background:var(--panel-2); }
+.agent-tool-note { display:block; padding:5px 12px; font-size:11px; color:var(--ink-2); }
+.agent-approval { border:1px solid var(--border); border-radius:12px; padding:12px; min-width:0; }
+.agent-approval[data-state="pending"] { box-shadow:0 0 0 1px var(--ink-1); }
+.agent-approval-title { display:flex; align-items:center; gap:8px; font-size:13px; margin-bottom:8px; }
+.agent-approval-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; margin-top:10px; }
+.agent-approval-actions .button { min-height:30px; font-size:12px; }
+.agent-tool-row summary:focus-visible,.agent-approval button:focus-visible { outline:2px solid var(--ink-1); outline-offset:2px; }
+@media(hover:hover) { .agent-workspace-button:not(:disabled):hover,.agent-permission-picker:not(:disabled):hover,.agent-tool-row summary:hover { background:var(--panel-2); color:var(--ink-1); } }
+@media(pointer:coarse) { .agent-workspace-button,.agent-permission-picker,.agent-approval-actions .button { min-height:44px; } }
+@media(max-width:900px) { .composer-left { flex-wrap:wrap; } .agent-workspace-button { max-width:145px; } }
+
+
+.agent-permission-picker { cursor:pointer; white-space:nowrap; outline:2px solid transparent; outline-offset:2px; }
+.agent-permission-picker[aria-expanded="true"] { background:var(--panel-2); color:var(--ink-1); }
+
+/* Three execution policies share the compact model-menu surface. */
+.agent-permission-menu,.agent-permission-picker { --permission-warning:#af430d; }
+.agent-permission-heading { padding:8px 10px 6px; font-size:11px; color:var(--ink-3); }
+.agent-permission-option { gap:10px; align-items:flex-start; padding:11px 10px; }
+.agent-permission-option>svg { margin-top:2px; flex:none; }
+.agent-permission-copy { flex:1; min-width:0; font-size:13px; line-height:1.5; }
+.agent-permission-copy>span { display:block; }
+.agent-permission-copy small { display:block; font-size:11px; line-height:1.65; font-weight:400; color:var(--ink-2); margin-top:2px; white-space:normal; }
+.agent-permission-check.is-hidden { visibility:hidden; }
+.agent-permission-picker[data-mode="full-access"],.agent-permission-option[data-mode="full-access"],.agent-permission-option[data-mode="full-access"] small { color:var(--permission-warning); }
+.agent-permission-details-toggle { justify-content:space-between; font-size:11px; color:var(--ink-2); }
+.agent-permission-details { margin:0; padding:8px 10px 10px; font-size:11px; line-height:1.75; color:var(--ink-2); }

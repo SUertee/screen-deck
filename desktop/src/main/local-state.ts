@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { readdir } from 'node:fs/promises';
-import { atomicReplace, checkDirectories, readBytes, StorageError, withExclusiveLock } from '../core/private-storage.js';
+import { atomicReplace, checkDirectories, readBytes, StorageError, withExclusiveLock } from '../core/storage/private-storage.js';
 
 /** Bounded preview-only settings/drafts. No writes to existing project/task history. */
 export class LocalState {

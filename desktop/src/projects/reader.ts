@@ -1,4 +1,5 @@
 import path from 'node:path';
+import type { DirectoryProjects } from './directory-projects.js';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
 import { TextDecoder } from 'node:util';
@@ -17,7 +18,7 @@ const emptyResult = (): ProjectWorkspaceResult => ({ status: 'error', project: n
 const issue = (code: string, location: string, message: string) => new ProjectReadFailure(code, location, message);
 const diagnostic = (error: unknown): ProjectDiagnostic => error instanceof ProjectReadFailure
   ? { code: error.code, severity: 'error', path: error.location, message: error.message }
-  : { code: isMissing(error) ? 'missing_source' : 'read_failed', severity: 'error', path: '项目来源', message: isMissing(error) ? '项目身份或必需的记录目录不存在；未导入或修改任何来源文件。' : '项目来源无法读取；未导入或修改任何来源文件。' };
+  : { code: isMissing(error) ? 'missing_source' : 'read_failed', severity: 'error', path: '项目来源', message: isMissing(error) ? '项目记录暂时无法读取，请重新选择项目。' : '项目来源无法读取；未导入或修改任何来源文件。' };
 
 function resolveReference(reference: RecordReference, projectID: string): ResolvedReference {
   if (reference.path.startsWith('screendeck:')) {
@@ -59,7 +60,7 @@ export class ProjectWorkspaceReader {
   private readonly roots = new Map<string, string>();
   private queue: Promise<unknown> = Promise.resolve();
 
-  constructor(options: { privateRoot?: string; limits?: Partial<ProjectReaderLimits> } = {}) {
+  constructor(private options: { directoryProjects?: DirectoryProjects; privateRoot?: string; limits?: Partial<ProjectReaderLimits> } = {}) {
     this.privateRoot = options.privateRoot ?? path.join(os.homedir(), '.screendeck');
     this.limits = { ...DEFAULT_PROJECT_LIMITS, ...options.limits };
     for (const [name, value] of Object.entries(this.limits)) {
@@ -168,6 +169,11 @@ export class ProjectWorkspaceReader {
     };
     try {
       rootScope = await SafeReadScope.create(root);
+      if (this.options.directoryProjects && !await rootScope.exists('.screendeck/project.json')) {
+        const identity = await this.options.directoryProjects.register(root);
+        await rootScope.recheck();
+        return { result: { status: 'empty', project: { ...identity, root_path: root, history_bound: false, readonly: true }, tasks: [], runs: [], artifact_refs: [], diagnostics: [], loaded_at: new Date().toISOString(), historical: true }, root, identityHash: '', historyHash: null, stale: false };
+      }
       const identityBytes = await rootScope.read('.screendeck/project.json', this.limits.jsonBytes);
       const identity = parse<ProjectIdentity>(identityBytes, 'project_identity', '.screendeck/project.json');
       const projectID = identity.project_id;

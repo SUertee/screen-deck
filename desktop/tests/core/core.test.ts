@@ -93,7 +93,8 @@ test('cooperating O_EXCL lock never overwrites or steals an existing lock', asyn
 
 test('adapter emits JSON text and observed model without tools or credentials in payload', async () => {
   const events: ExecutionEvent[] = []; let calls = 0;
-  const adapter = new ChatCompletionsAdapter({ endpoint: 'https://example.invalid/v1/chat/completions', credential: async () => 'unit-test-secret', fetch: (async (_url, init) => {
+  const adapter = new ChatCompletionsAdapter({ baseURL: 'https://example.invalid/v1///', credential: async () => 'unit-test-secret', fetch: (async (url, init) => {
+    assert.equal(String(url), 'https://example.invalid/v1/chat/completions');
     calls += 1; const body = JSON.parse(String(init?.body));
     assert.deepEqual(Object.keys(body).sort(), ['messages', 'model', 'n', 'stream']); assert.equal(JSON.stringify(body).includes('unit-test-secret'), false);
     assert.equal((init?.headers as Record<string, string>).Authorization, 'Bearer unit-test-secret'); return response(reply);
@@ -105,19 +106,19 @@ test('adapter emits JSON text and observed model without tools or credentials in
 
 test('adapter rejects tool_calls, sanitizes provider errors, and never retries', async () => {
   let calls = 0;
-  const adapter = new ChatCompletionsAdapter({ endpoint: 'https://example.invalid/v1/chat/completions', credential: async () => 'secret-token', fetch: (async () => {
+  const adapter = new ChatCompletionsAdapter({ baseURL: 'https://example.invalid/v1', credential: async () => 'secret-token', fetch: (async () => {
     calls += 1; return response({ ...reply, choices: [{ message: { role: 'assistant', content: null, tool_calls: [{ function: { name: 'shell' } }] }, finish_reason: 'tool_calls' }] });
   }) as typeof fetch });
   await assert.rejects(adapter.execute({ clientRequestID: randomUUID(), model, messages: [] }, async () => {}, new AbortController().signal), error => error instanceof ExecutionError && error.code === 'tools-forbidden');
   assert.equal(calls, 1);
-  const failing = new ChatCompletionsAdapter({ endpoint: 'https://example.invalid/v1/chat/completions', credential: async () => 'secret-token', fetch: (async () => new Response('secret-token account@private.invalid', { status: 401 })) as typeof fetch });
+  const failing = new ChatCompletionsAdapter({ baseURL: 'https://example.invalid/v1', credential: async () => 'secret-token', fetch: (async () => new Response('secret-token account@private.invalid', { status: 401 })) as typeof fetch });
   await assert.rejects(failing.execute({ clientRequestID: randomUUID(), model, messages: [] }, async () => {}, new AbortController().signal), error => error instanceof ExecutionError && error.message.includes('401') && !error.message.includes('secret-token'));
 });
 
 test('cancellation while credential is pending prevents HTTP submission', async () => {
   let release!: () => void; const credential = new Promise<void>(resolve => { release = resolve; }); let calls = 0;
   const controller = new AbortController();
-  const adapter = new ChatCompletionsAdapter({ endpoint: 'https://example.invalid/v1/chat/completions', credential: async () => { await credential; return undefined; }, fetch: (async () => { calls += 1; return response(reply); }) as typeof fetch });
+  const adapter = new ChatCompletionsAdapter({ baseURL: 'https://example.invalid/v1', credential: async () => { await credential; return undefined; }, fetch: (async () => { calls += 1; return response(reply); }) as typeof fetch });
   const running = adapter.execute({ clientRequestID: randomUUID(), model, messages: [] }, async () => {}, controller.signal);
   controller.abort(); release();
   await assert.rejects(running, error => error instanceof ExecutionError && error.code === 'cancelled' && !error.attempted); assert.equal(calls, 0);
@@ -135,7 +136,7 @@ test('local HTTP SSE handles split UTF-8, CRLF, model observation and completion
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   try {
     const address = server.address(); assert.ok(address && typeof address !== 'string'); const events: ExecutionEvent[] = [];
-    const adapter = new ChatCompletionsAdapter({ endpoint: `http://127.0.0.1:${address.port}/v1/chat/completions`, credential: async () => undefined });
+    const adapter = new ChatCompletionsAdapter({ baseURL: `http://127.0.0.1:${address.port}/v1`, credential: async () => undefined });
     await adapter.execute({ clientRequestID: randomUUID(), model, messages: [{ role: 'user', content: '测试' }] }, async event => { events.push(event); }, new AbortController().signal);
     assert.equal((events.find(event => event.type === 'text-delta') as Extract<ExecutionEvent, { type: 'text-delta' }>).text, '你好');
     assert.equal(events.at(-1)?.type, 'completed'); assert.equal(JSON.parse(body).tools, undefined);
@@ -148,7 +149,7 @@ test('local HTTP stalled response times out once with a sanitized error', async 
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   try {
     const address = server.address(); assert.ok(address && typeof address !== 'string');
-    const adapter = new ChatCompletionsAdapter({ endpoint: `http://127.0.0.1:${address.port}/v1/chat/completions`, credential: async () => undefined, timeoutMs: 30 });
+    const adapter = new ChatCompletionsAdapter({ baseURL: `http://127.0.0.1:${address.port}/v1`, credential: async () => undefined, timeoutMs: 30 });
     await assert.rejects(adapter.execute({ clientRequestID: randomUUID(), model, messages: [] }, async () => {}, new AbortController().signal), error => error instanceof ExecutionError && error.code === 'timeout');
     assert.equal(requests, 1);
   } finally { await closeServer(server); }
@@ -254,7 +255,7 @@ test('adapter rejects SSE tool events and incomplete streams after preserving pa
     [{ model: 'actual-model', choices: [{ index: 0, delta: { content: 'Partial' }, finish_reason: null }] }, 'incomplete'],
   ] as const) {
     const events: ExecutionEvent[] = [];
-    const adapter = new ChatCompletionsAdapter({ endpoint: 'https://example.invalid/v1/chat/completions', credential: async () => undefined, fetch: (async () => new Response(`data: ${JSON.stringify(payload)}\n\n`, { headers: { 'Content-Type': 'text/event-stream' } })) as typeof fetch });
+    const adapter = new ChatCompletionsAdapter({ baseURL: 'https://example.invalid/v1', credential: async () => undefined, fetch: (async () => new Response(`data: ${JSON.stringify(payload)}\n\n`, { headers: { 'Content-Type': 'text/event-stream' } })) as typeof fetch });
     await assert.rejects(adapter.execute({ clientRequestID: randomUUID(), model, messages: [] }, async event => { events.push(event); }, new AbortController().signal), error => error instanceof ExecutionError && error.code === code);
     assert.equal(events.some(event => event.type === 'completed'), false);
   }
@@ -301,7 +302,7 @@ test('retry adopts an exact terminal record when a write succeeded before report
 
 test('full stateless chat roundtrip persists actual text and leaves no secret or external session binding', async () => {
   const root = join(await temp(), 'sessions'); const store = new SessionHistoryStore(root);
-  const driver = new ChatCompletionsAdapter({ endpoint: 'https://example.invalid/v1/chat/completions', credential: async () => 'secret-unit-fixture', fetch: (async () => response(reply)) as typeof fetch });
+  const driver = new ChatCompletionsAdapter({ baseURL: 'https://example.invalid/v1', credential: async () => 'secret-unit-fixture', fetch: (async () => response(reply)) as typeof fetch });
   const manager = new SessionManager({ store, driver }); const created = await manager.createSession('Real local history');
   await manager.sendMessage({ sessionID: created.conversation_id, text: 'Hello', model }); await manager.shutdown();
   const loaded = await new SessionHistoryStore(root).load(created.conversation_id); assert.equal(loaded?.messages[1]?.text, 'Hello'); assert.equal(loaded?.turns[0]?.state, 'finished'); assert.equal(loaded?.binding, undefined);
@@ -311,7 +312,7 @@ test('full stateless chat roundtrip persists actual text and leaves no secret or
 
 test('HTTP rejection is never reported as an accepted chat turn', async () => {
   const store = new MemoryStore();
-  const driver = new ChatCompletionsAdapter({ endpoint: 'https://example.invalid/v1/chat/completions', credential: async () => undefined, fetch: (async () => new Response('private error', { status: 401 })) as typeof fetch });
+  const driver = new ChatCompletionsAdapter({ baseURL: 'https://example.invalid/v1', credential: async () => undefined, fetch: (async () => new Response('private error', { status: 401 })) as typeof fetch });
   const manager = new SessionManager({ store, driver }); const record = await manager.createSession('Chat');
   const result = await manager.sendMessage({ sessionID: record.conversation_id, text: 'Hello', model });
   assert.equal(result.status, 'uncertain'); assert.equal(result.session.turns[0]?.state, 'failed'); assert.equal(result.session.turns[0]?.failure?.includes('private error'), false);
@@ -364,7 +365,7 @@ test('a delayed listing cannot pair a new observation with old send data or roll
 test('SSE DONE without a legal finish reason never completes a turn', async () => {
   for (const body of ['data: [DONE]\n\n', `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: 'Partial' }, finish_reason: null }] })}\n\ndata: [DONE]\n\n`]) {
     const events: ExecutionEvent[] = [];
-    const adapter = new ChatCompletionsAdapter({ endpoint: 'https://example.invalid/v1/chat/completions', credential: async () => undefined, fetch: (async () => new Response(body, { headers: { 'Content-Type': 'text/event-stream' } })) as typeof fetch });
+    const adapter = new ChatCompletionsAdapter({ baseURL: 'https://example.invalid/v1', credential: async () => undefined, fetch: (async () => new Response(body, { headers: { 'Content-Type': 'text/event-stream' } })) as typeof fetch });
     await assert.rejects(adapter.execute({ clientRequestID: randomUUID(), model, messages: [] }, async event => { events.push(event); }, new AbortController().signal), error => error instanceof ExecutionError && error.code === 'incomplete');
     assert.equal(events.some(event => event.type === 'completed'), false);
   }

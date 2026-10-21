@@ -1,0 +1,50 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, realpath, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { TaskOrchestrator } from '../../src/core/tasks/task-orchestrator.js';
+import { LocalState } from '../../src/main/local-state.js';
+import { installTaskAdviceRoutes } from '../../src/main/task-advice-routes.js';
+import { JevService } from '../../src/main/jev-service.js';
+import type { ElectronHost } from '../../src/main/electron-host.js';
+import type { AgentChatRegistry } from '../../src/core/agents/agent-chat-registry.js';
+import type { ProviderSettingsStore } from '../../src/main/provider-settings.js';
+async function fixture(t: {after(fn:()=>Promise<void>):void}) {
+  const root=await mkdtemp(join(await realpath(tmpdir()),'screendeck-jev-routes-'));t.after(()=>rm(root,{recursive:true,force:true}));
+  const plans=new TaskOrchestrator(root), local=new LocalState(join(root,'state')), methods=new Map<string,(input:unknown)=>unknown>(), events:unknown[]=[];
+  let sends=0, release:(()=>void)|undefined, wait:Promise<void>|undefined;
+  const plan=await plans.createPlan('Jev route task',[{id:randomUUID(),title:'Implement selected task',kind:'implementation',assignee:'unassigned',expected_result:'Result file',dependencies:[],status:'planned'}],undefined,{schemaVersion:3});
+  const source={state:'ready',agentID:'codex',name:'Codex',model:{provider_id:'fixture',model_id:'fixture-codex-model'},capabilities:{tools:true}};
+  installTaskAdviceRoutes({host:{handle:(name,fn)=>methods.set(name,fn),broadcast:event=>events.push(event)} as Pick<ElectronHost,'handle'|'broadcast'>,plans,local,drivers:{listSources:()=>[source]} as unknown as AgentChatRegistry,provider:{publicSettings:()=>({hasKey:false})} as ProviderSettingsStore, serviceFactory:(credentials,model)=>new JevService(credentials,{model,minimumConfidence:.8,transportFactory:()=>({provenance:'test-fixture',async systemOne(request){sends++;await wait;const ids=Object.keys(request.questions.assignee.criteria);return{model:request.model,answers:{assignee:{type:'choice',choice:'agent_codex',confidence:.9,probabilities:Object.fromEntries(ids.map(id=>[id,id==='agent_codex'?.9:.1]))}},usage:{input_tokens:10,output_tokens:1}};}})})});
+  const invoke=async(name:string,input?:unknown)=>methods.get(name)!(input);
+  return {plans,plan,events,invoke,sends:()=>sends,hold:()=>{wait=new Promise<void>(resolve=>{release=resolve;});},release:()=>release?.()};
+}
+test('Jev fixed routes preview without sending, send once after explicit consent and CAS-save user choice',async t=>{
+  const f=await fixture(t);
+  await f.invoke('jev-save-settings',{model:'jev-fixture',apiKey:'synthetic-private-key-only'});
+  assert.deepEqual(await f.invoke('jev-settings'),{model:'jev-fixture',hasKey:true});
+  const preview=await f.invoke('jev-preview',{planID:f.plan.id,workItemID:f.plan.work_items[0].id,materialIDs:[]}) as {id:string};
+  assert.equal(f.sends(),0);
+  await assert.rejects(f.invoke('jev-recommend',{id:preview.id,budgetConfirmed:false}));
+  const first=await f.invoke('jev-recommend',{id:preview.id,budgetConfirmed:true});
+  assert.deepEqual(await f.invoke('jev-recommend',{id:preview.id,budgetConfirmed:true}),first);assert.equal(f.sends(),1);
+  assert.equal((await f.plans.loadPlan(f.plan.id))?.work_items[0].assignee,'unassigned');
+  await assert.rejects(f.invoke('jev-apply',{id:preview.id,candidateID:'unregistered'}));
+  await f.invoke('jev-apply',{id:preview.id,candidateID:'human'});
+  assert.equal((await f.plans.loadPlan(f.plan.id))?.work_items[0].assignee,'human');assert.equal(f.events.length,1);
+  await f.invoke('jev-apply',{id:preview.id,candidateID:'human'});assert.equal((await f.plans.loadPlan(f.plan.id))?.version,2);
+});
+test('Jev stale preview and changed model cannot send or apply a late suggestion',async t=>{
+  const f=await fixture(t);await f.invoke('jev-save-settings',{model:'jev-fixture',apiKey:'synthetic-private-key-only'});
+  const preview=await f.invoke('jev-preview',{planID:f.plan.id,workItemID:f.plan.work_items[0].id,materialIDs:[]}) as {id:string};
+  await f.plans.savePlan({...f.plan,title:'New version'},f.plan.version);
+  await assert.rejects(f.invoke('jev-recommend',{id:preview.id,budgetConfirmed:true}));assert.equal(f.sends(),0);
+  const next=(await f.plans.loadPlan(f.plan.id))!;
+  const pending=await f.invoke('jev-preview',{planID:next.id,workItemID:next.work_items[0].id,materialIDs:[]}) as {id:string};
+  f.hold();const request=f.invoke('jev-recommend',{id:pending.id,budgetConfirmed:true});
+  while(!f.sends())await new Promise(resolve=>setImmediate(resolve));
+  await f.invoke('jev-save-settings',{model:'jev-other-fixture'});f.release();await assert.rejects(request);
+  assert.equal(f.sends(),1);assert.equal(f.events.length,0);
+});

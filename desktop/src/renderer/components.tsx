@@ -1,11 +1,37 @@
-import React, { useEffect, useRef, type ReactNode } from 'react';
+import React, { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { AlertCircle, Check, Circle, Clock3, LoaderCircle, Square, X } from 'lucide-react';
+import { AlertCircle, Check, Circle, Clock3, Copy, LoaderCircle, ChevronDown, Square, X } from 'lucide-react';
 import type { TurnState } from '../shared/types';
+import './message-content.css';
 
 export function Brand({ compact = false }: { compact?: boolean }) {
-  return <span className="brand"><span className="brand-mark" aria-hidden="true"><i /><i /></span>{!compact && <span>ScreenDeck</span>}</span>;
+  return <span className="brand"><span className="brand-mark" aria-hidden="true" />{!compact && <span>ScreenDeck</span>}</span>;
 }
+
+/** A source change prepares a new chat; it never starts a runtime or moves history. */
+export function ChatSourcePicker({ value, agentID, agents, onChange, disabled = false, state = 'default' }: {
+  value: 'model' | 'agent'; agentID?: string; agents: ReadonlyArray<{ agentID: string; name: string }>;
+  onChange: (value: 'model' | 'agent', agentID?: string) => void; disabled?: boolean; state?: 'default' | 'loading' | 'error' | 'success';
+}) {
+  const hintID = useId();
+  const current = agents.find(agent => agent.agentID === agentID);
+  const name = value === 'agent' ? current?.name ?? agentID ?? 'Agent' : '直接模型';
+  return <span className="chat-source-control" data-source={value} data-state={disabled ? 'disabled' : state} aria-busy={state === 'loading'} title={`${name} · 切换聊天来源`}>
+    <select className="chat-source-select" aria-label="聊天来源" aria-describedby={hintID} value={value === 'agent' ? `agent:${agentID ?? ''}` : 'model'} disabled={disabled} onChange={event => {
+      const selected = event.target.value;
+      if (selected === 'model') onChange('model');
+      else { const agent = agents.find(item => `agent:${item.agentID}` === selected); if (agent) onChange('agent', agent.agentID); }
+    }}>
+      <option value="model">直接模型</option>
+      {value === 'agent' && !current && <option value={`agent:${agentID ?? ''}`} disabled>{name}（未注册）</option>}
+      {agents.map(agent => <option key={agent.agentID} value={`agent:${agent.agentID}`}>{agent.name}</option>)}
+    </select>
+    <ChevronDown className="chat-source-chevron" size={12} aria-hidden="true" />
+    <span id={hintID} className="visually-hidden">切换来源会进入新聊天，保留原记录与草稿。</span>
+  </span>;
+}
+
+export { ChatModelPicker } from './ChatModelPicker';
 
 export function Empty({ icon, title, children, action }: { icon?: ReactNode; title: string; children?: ReactNode; action?: ReactNode }) {
   return <div className="empty"><div className="empty-icon" aria-hidden="true">{icon}</div><h2>{title}</h2>{children && <p>{children}</p>}{action && <div className="empty-action">{action}</div>}</div>;
@@ -32,11 +58,101 @@ export function formatDate(value?: string | null, withTime = true): string {
   return new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric', ...(withTime ? { hour: '2-digit', minute: '2-digit' } : {}) }).format(date);
 }
 
+/** Clipboard writes use the fixed main-process API and the supplied source text. */
+export function CopyButton({ text, label = '复制' }: { text: string; label?: string }) {
+  const [state, setState] = useState<'default' | 'loading' | 'success' | 'error'>('default');
+  const feedbackID = useId();
+  const mounted = useRef(false);
+  const inFlight = useRef(false);
+  const attempt = useRef(0);
+  const resetTimer = useRef<number | undefined>(undefined);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      attempt.current++;
+      if (resetTimer.current !== undefined) window.clearTimeout(resetTimer.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    attempt.current++;
+    inFlight.current = false;
+    if (resetTimer.current !== undefined) window.clearTimeout(resetTimer.current);
+    setState('default');
+  }, [text]);
+
+  const copy = async () => {
+    if (inFlight.current || text.length === 0) return;
+    inFlight.current = true;
+    const currentAttempt = ++attempt.current;
+    if (resetTimer.current !== undefined) window.clearTimeout(resetTimer.current);
+    setState('loading');
+    try {
+      const api = window.screendeck;
+      if (!api?.copyText) throw new Error('Clipboard bridge unavailable.');
+      await api.copyText(text);
+      if (!mounted.current || attempt.current !== currentAttempt) return;
+      inFlight.current = false;
+      setState('success');
+      resetTimer.current = window.setTimeout(() => {
+        if (mounted.current && attempt.current === currentAttempt) setState('default');
+      }, 1800);
+    } catch {
+      if (!mounted.current || attempt.current !== currentAttempt) return;
+      inFlight.current = false;
+      setState('error');
+    }
+  };
+
+  const disabled = text.length === 0 || state === 'loading';
+  const feedback = state === 'loading' ? '正在复制。' : state === 'success' ? '已复制。' : state === 'error' ? '复制失败，请点击重试。' : '';
+  const Icon = state === 'loading' ? LoaderCircle : state === 'success' ? Check : state === 'error' ? AlertCircle : Copy;
+  const buttonText = state === 'loading' ? '复制中…' : state === 'success' ? '已复制' : state === 'error' ? '重试复制' : label;
+
+  return <span className="copy-control">
+    <button
+      className="copy-button"
+      type="button"
+      aria-label={label}
+      aria-describedby={feedbackID}
+      aria-busy={state === 'loading'}
+      title={state === 'error' ? '复制失败，请点击重试。' : label}
+      data-testid="copy-button"
+      data-copy-state={text.length === 0 ? 'disabled' : state}
+      disabled={disabled}
+      onClick={() => { void copy(); }}
+    >
+      <Icon size={14} className="copy-button-icon" aria-hidden="true" />
+      <span className="copy-button-label">{buttonText}</span>
+    </button>
+    <span id={feedbackID} className="copy-status" role="status" aria-live="polite" aria-atomic="true">{feedback}</span>
+  </span>;
+}
+
 /** Model output never creates image requests or interprets raw HTML. */
 export function Markdown({ text }: { text: string }) {
   return <div className="markdown"><ReactMarkdown skipHtml components={{
     img: ({ alt }) => <span className="omitted-image">[图片{alt ? `：${alt}` : ''}]</span>,
     a: ({ children, href }) => <span className="message-link">{children}{href ? ` (${href})` : ''}</span>,
+    pre: ({ node, children }) => {
+      const code = node?.children[0];
+      if (code?.type !== 'element' || code.tagName !== 'code' || code.children.some(child => child.type !== 'text')) return <pre>{children}</pre>;
+      const rendered = code.children.map(child => child.type === 'text' ? child.value : '').join('');
+      // The installed mdast-util-to-hast code handler appends one LF to nonempty
+      // blocks. Remove only that generated LF; preserve indentation and blank lines.
+      const source = rendered.endsWith('\n') ? rendered.slice(0, -1) : rendered;
+      const classes = Array.isArray(code.properties.className) ? code.properties.className : [];
+      const language = classes.find(value => typeof value === 'string' && value.startsWith('language-'))?.toString().slice(9) ?? '';
+      return <section className="markdown-code-block" data-testid="markdown-code-block">
+        <header className="markdown-code-header">
+          <span className="markdown-code-language" title={language || '纯文本'}>{language || '纯文本'}</span>
+          <CopyButton text={source} label="复制代码" />
+        </header>
+        <pre className="markdown-code-pre" tabIndex={0} aria-label={language ? `${language} 代码` : '代码'}><code>{source}</code></pre>
+      </section>;
+    },
   }}>{text}</ReactMarkdown></div>;
 }
 
@@ -45,7 +161,7 @@ export function TimelineRow({ title, date, children, state }: { title: string; d
 }
 
 /** All background regions become inert while a sheet is open. */
-export function Modal({ title, children, onClose, wide = false }: { title: string; children: ReactNode; onClose: () => void; wide?: boolean }) {
+export function Modal({ title, children, onClose, wide = false, className, hideHeader = false }: { title: string; children: ReactNode; onClose: () => void; wide?: boolean; className?: string; hideHeader?: boolean }) {
   const dialog = useRef<HTMLDivElement>(null);
   const initialClose = useRef(onClose);
   useEffect(() => {
@@ -66,5 +182,5 @@ export function Modal({ title, children, onClose, wide = false }: { title: strin
     document.addEventListener('keydown', onKey);
     return () => { shell?.removeAttribute('inert'); document.removeEventListener('keydown', onKey); previous?.focus(); };
   }, []);
-  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className={`modal ${wide ? 'modal-wide' : ''}`} ref={dialog} role="dialog" aria-modal="true" aria-labelledby="modal-title"><header className="modal-header"><h2 id="modal-title">{title}</h2><button className="icon-button" aria-label="关闭" onClick={onClose}><X size={18} /></button></header>{children}</div></div>;
+  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) { event.preventDefault(); onClose(); } }}><div className={`modal ${wide ? 'modal-wide' : ''} ${className ?? ''}`} ref={dialog} role="dialog" aria-modal="true" aria-labelledby="modal-title">{hideHeader ? <h2 className="visually-hidden" id="modal-title">{title}</h2> : <header className="modal-header"><h2 id="modal-title">{title}</h2><button className="icon-button" aria-label="关闭" onClick={onClose}><X size={18} /></button></header>}{children}</div></div>;
 }

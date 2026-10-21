@@ -1,0 +1,16 @@
+import React, { useState } from 'react';
+import { createRoot } from 'react-dom/client';
+import { ScreenRecordingSettingsPanel } from '../../src/renderer/RecordingControls';
+import { ScreenDisplaySelection } from '../../src/renderer/ScreenDisplaySelection';
+import { FrameCaptureMetadata } from '../../src/renderer/FrameCaptureMetadata';
+import type { ScreenFrame, ScreenRecordingAPI, ScreenRecordingSettings } from '../../src/shared/screen-recording';
+import '../../src/renderer/styles.css';
+import '../../src/renderer/unified-timeline.css';
+const base: ScreenRecordingSettings={intervalSeconds:10,retentionDays:7,maxStorageMB:1024,displayID:1,displayIDs:[1,2,77],excludedApps:['private.app']};
+const displays=[{id:1,name:'内建显示器',width:1440,height:900},{id:2,name:'工作显示器',width:1920,height:1080}];
+let displayError=false,saveError=false,writes:ScreenRecordingSettings[]=[],permissionCalls=0;
+const api:ScreenRecordingAPI={screenStatus:async()=>({state:'stopped',message:'记录已关闭',supported:true,settings:structuredClone(base),frameCount:0,storageBytes:0}),screenDisplays:async()=>{if(displayError)throw Error('synthetic failure');return structuredClone(displays);},screenSettings:async input=>{if(saveError)throw Error('合成保存失败，请重试。');writes.push(structuredClone(input));return{state:'stopped',message:'记录已关闭',supported:true,settings:structuredClone(input),frameCount:0,storageBytes:0};},screenStart:async()=>{throw Error('capture forbidden');},screenStop:async()=>{throw Error('no recorder');},screenSearch:async()=>({frames:[],total:0,apps:[]}),screenImage:async()=>{throw Error('No pixels in fixture');},screenDelete:async()=>{},screenClear:async()=>{},screenOpenPermissions:async()=>{permissionCalls++;}};
+const frame:Omit<ScreenFrame,'text'>={id:'1792551600000-11111111-1111-4111-8111-111111111111',timestamp:'2026-10-21T03:00:00Z',appName:'编辑器',bundleID:'fixture.editor',displayID:2,width:960,height:600,bytes:4,display:{...displays[1],uuid:'00000000-0000-0000-0000-000000000002'},context:{kind:'topmost-window-on-display',observedAt:'2026-10-21T03:00:00Z',appIsFrontmost:false,windowFocus:'unknown',window:{id:42,title:'合成任务 · 编辑窗口',bounds:{x:1440,y:0,width:1000,height:700}}}};
+(globalThis as unknown as {__multiDisplayFixture:unknown}).__multiDisplayFixture={displayError:(value:boolean)=>{displayError=value;},saveError:(value:boolean)=>{saveError=value;},stats:()=>({writes,permissionCalls})};
+function Preview(){const[draft,setDraft]=useState(base);return <main style={{maxWidth:820,margin:'0 auto',padding:20}}><h1>多屏采集设置 · 合成预览</h1><div className="screen-settings-fixture"><ScreenRecordingSettingsPanel api={api}/></div><section aria-label="本屏来源预览"><h2>新记录来源</h2><FrameCaptureMetadata frame={frame}/></section><section aria-label="旧记录来源预览"><h2>旧记录来源</h2><FrameCaptureMetadata frame={{...frame,context:undefined,display:undefined}}/></section><h2>组件状态</h2>{['default','hover','focus-visible','active','disabled','loading','error','success'].map(state=><section key={state}><h3>{state}</h3><div className={`preview-state is-${state}`}><ScreenDisplaySelection settings={draft} displays={displays} loading={state==='loading'} error={state==='error'?'检测失败，请重新检测。':''} disabled={state==='disabled'} onChange={setDraft} onRefresh={()=>{}}/></div></section>)}</main>;}
+createRoot(document.getElementById('root')!).render(<Preview/>);

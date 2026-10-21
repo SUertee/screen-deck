@@ -1,72 +1,132 @@
-# ScreenDeck
+<p align="center">
+  <img src="desktop/assets/brand/screendeck-icon-black.png" width="72" alt="ScreenDeck 标志" />
+</p>
 
-聊天为中心的人机任务工作台。主版本为 **React + Electron + TypeScript/Node.js**，代码在 [desktop](desktop/README.md)；旧 Swift macOS 工程已冻结归档。
+<h1 align="center">ScreenDeck</h1>
+<p align="center"><strong>把屏幕线索、Agent 执行与知识沉淀，串成同一项任务。</strong></p>
+<p align="center">本地桌面 AI 工作台 · React + Electron + TypeScript · 开发预览版</p>
 
-## 当前版本
+ScreenDeck 围绕“下一步要推进什么”组织工作：从聊天或屏幕现场整理目标，拆成可核对的步骤，交给 Codex、OpenCode 或自己处理，再把验收后的方法留给下一项任务。
 
-- 黑白工作台、新聊天、项目任务与执行时间线、任务／文件页签、设置浮窗和联动 Deck 小窗口。
-- 任务页、聊天右栏与 Deck 共用版本化本地任务；可编辑目标、条件、材料、工作项与人工进度。带刘海的 Mac 保留悬停展开。TypeSafe Jev 已接候选分工判断，尚未验收真实服务；自动拆解与用量采集未接入。
-- 同一聊天页选择“模型聊天”或“OpenCode”：模型直连保留 Chat Completions；外部Agent支持无需Task的连续对话与原生工具，复用原生上下文。流式回复与本地历史分别保存。
-- 聊天页保留正文与输入，任务页独立管理任务，聊天右栏展示任务和文件；预览计划可手动保存，“讨论这一步”只带入草稿。正式项目 task/run 与受限附件保持只读。
-- 已保存的工作项记录可在中心聊天查看，原任务不可读时仍有恢复入口。新本地工作项复用 Codex／OpenCode 原生工具、单次审批及独立人工验收；旧 task-v2 保留无工具文本通道，应用不包含生产假执行器或模拟开关；旧模拟记录只读，不交给新 ACP 核对、重绑或重发，不改正式任务状态。
+任务、会话、屏幕记录与知识保存在本机；推理和工具执行由你选择的模型服务或 Agent 提供。当前主要在 macOS 上开发和验证。
 
-- OpenCode 1.19.0 通过官方 TypeScript ACP SDK 1.8.0 接入稳定 ACP v1：编码工具设置自动检测本机程序、显式连接后可聊天；工作项执行仍在聊天内分别批准／开始、记录文本并人工验收；原 prompt 明确回执才确认取消；工作项实例未启用文件、命令或附件；独立Agent聊天已接通原生工具。ACP 不提供本版可用的跨重启原提交查询，未知结果保持阻塞且不重发。
+[快速开始](#快速开始) · [页面预览](#页面预览) · [配置连接](#配置连接) · [当前范围](#当前范围) · [开发说明](desktop/README.md)
 
-屏幕离散采集、OCR、时间线及线索确认入任务已合入，仍待真实安装包授权与长期采集验收。正式项目 task/run 只读；原生跨重启续接、对话生成完整计划、可信测试命令验收、手机同步及 Windows 安装包仍未完成。
+## 可以做什么
 
-Codex CLI 0.133.0通过原生app-server接入：在Agent设置中连接并使用ChatGPT登录，可选择工作目录与变更前确认／自动编辑／完全访问，进行连续聊天和原生文件／命令执行；使用原生默认模型，尚无模型切换，见[Codex接入](docs/architecture/codex-runtime-plan.md)。
+| 模块 | 当前能力 |
+| --- | --- |
+| 聊天 | 直接模型、Codex 与 OpenCode；流式回复、Markdown、代码复制、引用、搜索和归档，从已完成消息创建任务。 |
+| 任务 | 独立任务或可选项目归属；看板／列表、主目标、完成条件、材料、子任务与依赖，主窗口和 Deck 共用已保存版本。 |
+| 规划与分工 | 用已配置的生成模型提出步骤草稿；核对和修改后保存，可通过 TypeSafe Jev 比较实际执行候选。 |
+| 原生执行 | 调用 Codex／OpenCode 的文件与命令工具；冻结当次输入、确认开始、处理工具审批、查看证据并人工验收。 |
+| 屏幕时间线 | 按间隔采集屏幕与 OCR，记录显示器及应用／窗口元数据，按日期、应用和文字回看；核对后将线索选入任务。 |
+| 知识 | 从已接受成果中人工提取方法与结论；搜索、编辑、归档、核对来源，预览并选入其他任务的材料。 |
+| Deck | 紧凑任务浮窗；带刘海的 Mac 支持顶部悬停展开，无适配条件时使用普通浮窗，可创建目标、规划步骤和调整分工。 |
 
-## 运行
+### 一项任务怎样推进
 
-需要 Node.js 22.12+ 和 npm；本机及 CI 使用 22.21.1。
+1. **保存目标**：直接新建，或从一条已完成的聊天消息创建；项目、材料与完成条件按需补充。
+2. **核对计划**：生成步骤、依赖和分工，必要时参考 Jev 建议，修改后明确保存。
+3. **逐项执行**：选择工作目录、权限和材料，核对冻结输入后批准开始，处理原生工具审批。
+4. **检查成果**：查看具体产物及检查证据，人工接受或退回；中断和未知状态保留原记录。
+5. **留下方法**：从已接受的结果整理知识，下一次使用时保存明确的内容快照。
+
+## 页面预览
+
+以下为当前界面的隔离截图。任务、聊天、知识和屏幕画面均为演示数据，未使用私人记录或真实模型回复。
+
+### 聊天：讨论与任务在同一工作台
+
+![聊天工作台：Markdown 回复、输入区和创建任务入口](assets/screenshots/chat.jpg)
+
+### 任务：看清目标、进度和下一步
+
+![任务看板：待推进、执行中、等我处理和已完成](assets/screenshots/tasks.jpg)
+
+### 时间线：找回当时的屏幕现场
+
+![屏幕时间线：画面回看、应用信息和时间轨道](assets/screenshots/timeline.jpg)
+
+### 知识：阅读方法，明确用于下一项任务
+
+![知识库：标题与摘要列表、正文阅读和用于任务入口](assets/screenshots/knowledge.jpg)
+
+<details>
+<summary>查看 Deck 紧凑任务浮窗</summary>
+
+<p align="center"><img src="assets/screenshots/deck.jpg" width="380" alt="Deck 浮窗：任务、子项进度和分工，底部提供规划入口" /></p>
+
+截图展示普通浮窗形态。刘海模式沿用同一任务内容，在适配的显示器上顶部停靠。
+
+</details>
+
+## 快速开始
+
+需要 Git、npm 和 Node.js 22.12+；CI 使用 **22.21.1**。macOS 的原生辅助程序构建需要 Xcode Command Line Tools，屏幕采集辅助程序按 macOS 14+ 编译。首次安装需要联网下载依赖和 Electron。
 
 ```sh
-cd desktop
+git clone https://github.com/SUertee/screen-deck.git
+cd screen-deck/desktop
 npm ci
 npm run dev
 ```
 
-验证：`npm run typecheck`、`npm test`、`npm run build`、`npm run smoke`。macOS 本地临时签名预览包：`npm run package:mac`；不覆盖已有输出，未做公开发行签名与公证。首次安装需联网，隔离检查与已有依赖的脚本入口见 [桌面说明](desktop/README.md)。
+已有构建时可运行 `npm start`。完整开发、隔离检查和 macOS 预览包命令见 [desktop/README.md](desktop/README.md)；当前主线合并不会自动发布安装包。
 
-## 团队协作
+## 配置连接
 
-| 分支 | 用途与操作 |
+| 入口 | 配置方式 |
 | --- | --- |
-| `main` | 稳定主线；必须通过 PR、`Desktop checks`、分支最新与讨论解决，由 SUertee 手动合并。禁止直接推送、强推和删除，AI 不自行合并。 |
-| `dev` | 长期集成分支，承载当前开发代码；协作者可直接提交与 push，不强制 PR。 |
-| `feat/*`、`fix/*` 等 | 从最新 dev 创建，适合并行或较大改动，完成后合入 dev。 |
+| 设置 → 模型服务 | 填写 Chat Completions 兼容的 HTTPS API 地址与密钥，校验模型列表并选择模型；服务不提供列表时可明确手工填写。 |
+| 设置 → Agent 设置 → Codex | 安装兼容的 Codex CLI **0.133.0**，显式连接并使用 ChatGPT 登录；登录凭据由 Codex 管理。 |
+| 设置 → Agent 设置 → OpenCode | 安装兼容的 OpenCode **1.19.0**，选择程序并连接；当前通过 **ACP v1** 接入，使用已保存的模型服务配置。 |
+| 设置 → Agent 设置 → 任务分工判断 / Jev | 配置 TypeSafe 专用 API Key，默认模型为 `jev-latest`；发送前核对内容和调用费用。此项不加入执行 Agent 列表。 |
+| 时间线 → 开始记录 | 按系统提示授予屏幕录制权限，再选择显示器和排除应用；可停止记录并配置留存。 |
 
-短期分支如 `feat/task-editor`，提交与 PR 标题如 `fix(chat): 修复窄窗焦点恢复`。一次提交围绕一个目的，保留他人修改，不强推或删除长期分支。集成版本通过 `dev → main` PR 更新主线，使用 merge commit 保留长期分支共同历史。
+普通聊天不要求先创建项目或任务。需要文件和命令工具时，选择执行目录及“变更前确认／自动编辑／完全访问”；具体策略由对应 Agent 实际支持的能力决定。Jev 用于候选判断，步骤正文由生成模型提出。
 
-开始开发：
+## 本地数据与权限
+
+应用默认数据目录为 `~/.screendeck/`：
+
+| 内容 | 位置 |
+| --- | --- |
+| 正式任务与计划／队列记录 | `tasks/<任务 ID>/` |
+| 模型聊天、Agent 会话 | `sessions/`、`agent-sessions-v1/` |
+| 项目目录登记 | `projects/directory-index.json` |
+| 知识卡片 | `knowledge-v1/` |
+| 屏幕画面、OCR 和采集设置 | `screen-recordings/` |
+
+Task 保存目标与交接；Project 是可选归属和默认目录；Session 保存实际对话、执行目录及原生绑定；执行尝试关联当次任务版本、结果和验收。项目目录不等于系统沙箱。
+
+API Key 按当前实现以明文保存在本机私有文件中，文件权限为 `0600`；聊天与屏幕记录也未加密。模型请求会发送给你配置的服务；Agent 按实际权限访问资料，并交给自己的模型服务处理。打开时间线或保存一份计划不会自动调用模型或开始执行。
+
+旧 Electron 数据按兼容流程迁入正式目录，原记录保留；原生登录目录可能继续沿用旧路径。旧项目 task/run 历史保持只读；冻结的 Swift 原型位于 [archive/swift-prototype](archive/swift-prototype/README.md)。
+
+## 当前范围
+
+这是开发预览版。任务规划、单项原生执行、人工验收及知识复用已接通，以下能力仍在后续范围：
+
+- 无人值守的整份计划连续调度、原生会话跨应用重启续接。
+- Agent 原生模型自由切换、统一账户额度和用量汇总。
+- 宿主独立运行构建／测试命令并形成可信收据。
+- 自动采集知识、生成或安装 Skill、个人日报、云端／跨设备同步。
+- 公开发行签名、公证，以及 Windows 的完整安装和功能验收。
+
+屏幕记录是**离散画面采集与 OCR**，当前不包含音频；显示器上的窗口归属信息不等于精确窗口焦点。停止接收和远端取消分别记录，未知结果不会自动重发；人工进度勾选也不等于 Agent 产物已验收。
+
+## 开发与验证
 
 ```sh
-git fetch origin
-git switch dev
-git pull --ff-only origin dev
-git switch -c feat/task-editor
+cd desktop
+npm run typecheck
+npm test
+npm run build
 ```
 
-小改动可直接留在 dev；并行开发先明确修改范围。主线 PR 无需额外 approval，由 main 保护与 `main-owner-merge-only` 规则限制更新。提交、推送和主线合并是不同操作，AI 按用户本次授权执行。
+[`Desktop checks`](.github/workflows/desktop-checks.yml) 在 macOS 上检查类型、单元测试、构建和记录校验器。界面、真实账户、长期采集和发行安装另行验证；隔离 Electron 脚本入口见 [桌面说明](desktop/README.md)。
 
-[`Desktop checks`](.github/workflows/desktop-checks.yml) 在 macOS runner 上对 dev/main 的 push 与 PR 执行类型检查、单元测试、构建及根记录校验器的临时数据测试。它不验证 Electron 实机界面、真实模型或外部执行，也不自动发布安装包。界面／IPC 改动补相应本地隔离 smoke；PR 使用[模板](.github/pull_request_template.md)。完整规则见 [AGENTS.md](AGENTS.md)，远端限制以实际分支保护与规则集为准。
+代码入口：`desktop/src/renderer` 为界面，`src/main` 为进程与 IPC，`src/core` 为会话／任务／审批，`src/shared` 为契约。开发从最新 `dev` 建立 `feat/*`、`fix/*` 或 `docs/*` 分支；集成版本通过 `dev → main` PR 和必需检查合入，长期分支保留 merge commit。
 
-## 数据与隐私
-
-正式项目的 JSON 历史默认在 `~/.screendeck/projects/<project_id>/`：`history.json` 绑定项目根目录，`tasks/`、`runs/`、`artifacts/` 保存任务、执行记录与原件。项目内 `.screendeck/` 只保存身份与约定。
-
-Electron 模型聊天、独立Agent聊天、task-v2任务会话、预览计划与审批另存于 `~/.screendeck/previews/electron-v1/`，与正式项目历史及 Swift 原型隔离；不自动迁移、合并、双写或回写正式任务。
-
-设置中显式配置模型与凭据；API Key 由 main 进程保管，不返回界面或写入日志。设置页点击“校验并保存”，通过服务返回的列表选择模型后直接保存；API密钥以明文保存在本机 `credential.json`，文件权限为 `0600`，重启后继续使用，不再提供记住开关。旧 `credential.bin` 不读取、不解密或迁移，原用户需重新填写。直接模型聊天仅外发本会话已完成消息和当前输入；Agent可以按原生权限读取所选资料并交给自己的模型服务，具体范围见[工具权限](docs/architecture/tool-permissions.md)。停止不保证远端停止，未知结果不自动重发。密钥文件和聊天正文均未加密，请保护本机数据。
-
-配置、日志、计划和模型建议都不授予工具执行权限。批准／开始、工具决定／投递、执行结束／验收保持分别确认；详细能力、分层与限制见 [桌面说明](desktop/README.md)。
-
-正式项目记录的唯一规则源是 [`desktop/src/projects/record-schema.ts`](desktop/src/projects/record-schema.ts)，Electron 的 AJV 入口与根只读校验脚本复用字段和日期规则；独立 JSON Schema 副本已移除，用户记录仍是 JSON。根脚本需要支持原生 TypeScript 类型剥离的 Node.js，本机已验证 22.21.1；桌面应用的 22.12+ 最低要求不等于所有该版本 Node 都能直接运行此脚本。
-
-## Swift 原型
-
-旧源码、测试、Package 和打包资源在 [archive/swift-prototype](archive/swift-prototype/README.md)，保留未提交改动及被 Git 忽略的历史缓存；不参与默认开发。Electron已接入刘海窗口桥接；旧采集功能仍未迁移。
-
-归档只移动仓库文件，不移动用户数据或已安装应用；两版不能共用可写会话目录。
-
-docs 与 AGENTLOG 是被 Git 忽略的本机资料，不随克隆或推送。当前任务记录不代表自动开发日志已实现。
+完整协作约定见 [AGENTS.md](AGENTS.md)。`docs/` 与 `AGENTLOG.md` 是本机资料，按现有规则不随仓库克隆；公开使用和开发入口以本 README 与 [desktop/README.md](desktop/README.md) 为准。

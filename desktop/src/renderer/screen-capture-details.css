@@ -1,0 +1,25 @@
+/* finesse · component: screen-display-selection · register=product
+ * states: default · hover · focus-visible · active · disabled · loading · error · success
+ * tokens: inherited ScreenDeck monochrome */
+.screen-display-selection{border:1px solid var(--border);border-radius:var(--r-sm);padding:12px;margin:14px 0;min-width:0}
+.screen-display-selection legend{font-weight:600;padding:0 4px}
+.screen-display-selection .screen-display-option{display:flex;align-items:center;gap:10px;min-height:44px;line-height:1.5;padding:6px 8px;border-radius:var(--r-sm);cursor:pointer;min-width:0}
+.screen-display-option input{flex:0 0 auto;width:16px;height:16px;margin:0;accent-color:var(--accent)}
+.screen-display-option>span{min-width:0;overflow-wrap:anywhere}
+.screen-display-help{display:block;color:var(--ink-2);font-size:12px}
+.screen-display-choices{border-top:1px solid var(--border);margin-top:8px;padding-top:8px}
+.screen-display-feedback{min-height:2lh;font-size:12px;color:var(--ink-2);line-height:1.6;overflow-wrap:anywhere}
+.screen-display-selection .text-button{white-space:nowrap;min-height:36px}
+.screen-display-option input:focus-visible{outline:2px solid var(--ink-1);outline-offset:3px}
+.screen-display-option:active{background:var(--selected)}
+.screen-display-selection:disabled,.screen-display-option:has(input:disabled){opacity:.5;cursor:not-allowed}
+.screen-display-option:has(input:disabled) input{cursor:not-allowed}
+.screen-display-selection[aria-busy=true] .screen-display-feedback{font-style:italic}
+.screen-capture-facts{font-size:12px;color:var(--ink-2);margin-block:12px;line-height:1.6}
+.screen-capture-facts dl{margin:0}.screen-capture-facts dl>div{display:grid;grid-template-columns:76px minmax(0,1fr);gap:8px;margin-bottom:7px}
+.screen-capture-facts dt{color:var(--ink-3)}.screen-capture-facts dd{margin:0;overflow-wrap:anywhere}
+.screen-capture-facts p{margin:10px 0;font-size:11px}
+@media(hover:hover){.screen-display-option:hover:not(:has(input:disabled)){background:var(--panel-2)}}
+
+.preview-state.is-hover .screen-display-option,.preview-state.is-active .screen-display-option{background:var(--selected)}
+.preview-state.is-focus-visible .screen-display-option input{outline:2px solid var(--ink-1);outline-offset:3px}

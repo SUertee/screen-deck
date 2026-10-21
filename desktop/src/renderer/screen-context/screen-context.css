@@ -1,0 +1,28 @@
+/* finesse · component · existing monochrome workbench tokens · feedback only */
+.sc-draft-modal{max-width:760px;width:min(760px,calc(100vw - 32px))}
+.screen-context-draft{font-size:12px;line-height:1.7;min-width:0;color:var(--ink-1)}
+.screen-context-draft p{margin:6px 0;color:var(--ink-2);overflow-wrap:anywhere}
+.screen-context-draft label{display:grid;gap:6px;font-size:12px}
+.screen-context-draft textarea,.screen-context-draft select{width:100%;min-width:0;font:inherit;padding:10px;border:1px solid var(--border-strong);border-radius:var(--r-sm);background:var(--bg);color:var(--ink-1)}
+.screen-context-draft textarea{resize:vertical;line-height:1.7;min-height:60px}
+.sc-summary{margin:20px 0}.sc-summary>span,.sc-summary>small{font-size:10px;color:var(--ink-3)}.sc-summary>small{text-align:right}
+.sc-intro,.sc-status{padding:0 0 10px}.sc-status{border-bottom:1px solid var(--border)}
+.sc-source-heading{display:flex;justify-content:space-between;align-items:center;margin-top:20px}.sc-source-heading h3{font-size:13px;font-weight:500;margin:0}.sc-source-heading>span{font-size:10px;color:var(--ink-3)}
+.sc-clue{padding:16px 0;border-bottom:1px solid var(--border);min-width:0}.sc-clue header{display:flex;gap:12px;align-items:flex-start;justify-content:space-between}.sc-clue header>div{min-width:0}.sc-clue header strong{font-size:13px;font-weight:500;overflow-wrap:anywhere}.sc-clue header p{font-size:10px;color:var(--ink-3)}
+.sc-clue label,.sc-ocr{margin-top:12px}.sc-origin{font-size:10px;color:var(--ink-3);margin:8px 0}.sc-origin summary{cursor:pointer}.sc-origin code{display:block;overflow-wrap:anywhere;margin-top:6px}.sc-ocr textarea[readonly]{background:var(--panel-2);font-size:11px;max-height:200px;min-height:110px}.sc-target{margin-top:20px}.sc-target-note{font-size:11px}
+.screen-context-draft .sc-error,.screen-context-draft .sc-source-error p{color:var(--warn)}.sc-saved{padding:12px;background:var(--selected);border-radius:var(--r-sm)}
+.sc-footer{position:sticky;bottom:0;margin:20px -2px -2px;padding:12px 2px;background:var(--bg);border-top:1px solid var(--border)}.sc-footer p{font-size:10px;color:var(--ink-3)}.sc-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}.sc-actions .button{min-height:34px}
+.screen-context-draft button:disabled{opacity:.5;cursor:not-allowed}.screen-context-draft :is(button,textarea,select):focus-visible{outline:2px solid var(--ink-2);outline-offset:3px}.screen-context-draft button:active:not(:disabled){background:var(--selected)}
+.tl-clue-selection{display:flex;align-items:center;flex-wrap:wrap;gap:12px;padding:9px 30px;border-bottom:1px solid var(--border);font-size:11px;background:var(--panel-2)}.tl-clue-selection>span{margin-right:auto;color:var(--ink-2)}
+.tl-scene-selectable{display:flex;align-items:center;min-width:0;border-bottom:1px solid var(--border)}.tl-scene-selectable>input{flex:none;margin:0 10px 0 0;accent-color:var(--ink-1)}.tl-scene-selectable>.tl-scene-row{flex:1;border-bottom:0}.tl-scene-selectable:has(>input:checked){background:var(--selected)}
+@media(hover:hover){.screen-context-draft .text-button:hover:not(:disabled){color:var(--ink-1);text-decoration:underline}}
+@media(max-width:960px){.tl-clue-selection{padding-inline:20px}.sc-draft-modal{width:calc(100vw - 16px);max-height:calc(100dvh - 16px)}.sc-footer{position:static}}
+@media(pointer:coarse){.screen-context-draft button,.screen-context-draft select{min-height:44px}.tl-scene-selectable>input{width:20px;height:20px}}
+@media(prefers-reduced-motion:reduce){.screen-context-draft *{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+.modal-backdrop:has(>.sc-draft-modal){padding:24px;align-items:center}
+.modal.sc-draft-modal{width:min(760px,100%);max-height:calc(100dvh - 48px)}
+.sc-draft-modal>.screen-context-draft{padding:0 24px 24px}
+.sc-footer{margin:20px 0 0}
+@media(max-width:960px){.modal-backdrop:has(>.sc-draft-modal){padding:8px}.modal.sc-draft-modal{max-height:calc(100dvh - 16px)}}
+
+.sc-draft-modal>.modal-header{position:sticky;top:0;z-index:2;background:var(--bg)}

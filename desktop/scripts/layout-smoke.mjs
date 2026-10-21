@@ -59,32 +59,52 @@ const geometry = () => page.evaluate(() => {
   const panel = document.querySelector('.detail-panel');
   const center = document.getElementById('center-column');
   return { viewport: { width: innerWidth, height: innerHeight }, brand: rect('.brand-header'), sidebar: rect('.sidebar'),
+    brandMark: rect('.brand-header .brand-mark'), brandText: rect('.brand-header .brand > span:last-child'), collapse: rect('.brand-header .icon-button'), title: rect('.topbar-title'), headerActions: rect('.topbar-actions'),
     header: rect('.topbar'), center: rect('#center-column'), panel: rect('.detail-panel'), tabs: rect('.panel-tabs'), scrim: rect('.detail-scrim'),
-    model: rect('.model-select'), send: rect('.send-button'),
+    contextControls: [...document.querySelectorAll('.task-content-tabs button')].map(node => { const box = node.getBoundingClientRect(); return { y: box.y, bottom: box.bottom, height: box.height }; }),
+    model: rect('.model-select'), send: rect('.send-button'), composer: rect('.composer'),
     panelPosition: panel ? getComputedStyle(panel).position : null, centerInert: center.inert,
     scrimVisible: getComputedStyle(document.querySelector('.detail-scrim') ?? document.body).display !== 'none',
-    horizontalOverflow: document.documentElement.scrollWidth > innerWidth };
+    horizontalOverflow: document.documentElement.scrollWidth > innerWidth,
+    surfaces: Object.fromEntries(['.brand-header', '.sidebar', '.topbar', '#center-column', '.detail-panel'].map(selector => { const style = getComputedStyle(document.querySelector(selector)); return [selector, { borderLeft: style.borderLeftWidth, borderRight: style.borderRightWidth, borderBottom: style.borderBottomWidth, topRadius: style.borderTopLeftRadius, bottomRadius: style.borderBottomLeftRadius }]; })) };
 });
 const split = async label => {
   const value = await geometry();
-  for (const [name, header] of [['brand', value.brand], ['chat', value.header], ['context', value.tabs]]) {
-    near(header.y, 0, `${label} ${name} header top`);
-    near(header.height, 48, `${label} ${name} header height`);
+  near(value.brand.y, 0, `${label} native brand header top`);
+  near(value.brand.height, 56, `${label} native brand header height`);
+  for (const [name, header] of [['chat', value.header], ['context', value.tabs]]) {
+    near(header.y, 8, `${label} ${name} surface top inset`);
+    near(header.height, 48, `${label} ${name} inset header height`);
+    near(header.bottom, 56, `${label} ${name} header joins body`);
   }
-  near(value.sidebar.y, 48, `${label} sidebar body top`);
-  near(value.center.y, 48, `${label} chat body top`);
-  near(value.panel.y, 0, `${label} context column top`);
-  near(value.panel.bottom, value.viewport.height, `${label} context column bottom`);
-  near(value.brand.right, value.header.x, `${label} left header boundary`);
-  near(value.sidebar.right, value.center.x, `${label} left body boundary`);
-  near(value.header.right, value.panel.x, `${label} right header boundary`);
-  near(value.center.right, value.panel.x, `${label} right body boundary`);
-  near(value.panel.right, value.viewport.width, `${label} right viewport boundary`);
+  const contentCenter = value.title.y + value.title.height / 2;
+  for (const [name, box] of [['brand mark', value.brandMark], ['brand text', value.brandText], ['collapse', value.collapse], ['header actions', value.headerActions]]) { if (box.width > 0) near(box.y + box.height / 2, contentCenter, `${label} ${name} shares the title centerline`); }
+  near(contentCenter, 24, `${label} native titlebar content centerline`);
+  near(value.sidebar.y, 56, `${label} sidebar body top`);
+  near(value.center.y, 56, `${label} chat body top`);
+  near(value.panel.y, 8, `${label} context surface top`);
+  near(value.panel.bottom, value.viewport.height - 8, `${label} context surface bottom`);
+  near(value.center.bottom, value.viewport.height - 8, `${label} chat surface bottom`);
+  near(value.brand.right + 8, value.header.x, `${label} left header gutter`);
+  near(value.sidebar.right + 8, value.center.x, `${label} left body gutter`);
+  near(value.header.right + 8, value.panel.x, `${label} right header gutter`);
+  near(value.center.right + 8, value.panel.x, `${label} right body gutter`);
+  near(value.header.x, value.center.x, `${label} continuous chat left edge`);
+  near(value.header.right, value.center.right, `${label} continuous chat right edge`);
+  near(value.panel.right, value.viewport.width - 8, `${label} right outer inset`);
+  for (const selector of ['.brand-header', '.sidebar']) assert.equal(value.surfaces[selector].borderRight, '0px', `${label} no long sidebar rule`);
+  assert.equal(value.surfaces['.topbar'].borderBottom, '0px', `${label} no line across chat`);
+  assert.equal(value.surfaces['.detail-panel'].borderLeft, '0px', `${label} no long inspector rule`);
+  assert.equal(value.surfaces['.topbar'].topRadius, '16px');
+  assert.equal(value.surfaces['#center-column'].bottomRadius, '16px');
+  assert.equal(value.surfaces['.detail-panel'].topRadius, '16px');
+  for (const control of value.contextControls) { assert.ok(control.y >= value.tabs.y && control.bottom <= value.tabs.bottom, `${label} context header controls are not clipped`); assert.ok(control.height >= 44, `${label} context header target stays 44px`); }
   assert.ok(!['absolute', 'fixed'].includes(value.panelPosition), `${label} context must participate in layout`);
   assert.equal(value.centerInert, false, `${label} center remains interactive`);
   assert.equal(value.scrimVisible, false, `${label} has no overlay scrim`);
   assert.equal(value.horizontalOverflow, false, `${label} fits viewport`);
-  assert.ok(value.model.right <= value.send.x, `${label} model selection does not overlap Send`);
+  assert.ok(value.model.right <= value.send.x + 1 || value.model.bottom <= value.send.y + 1 || value.send.bottom <= value.model.y + 1, `${label} model selection does not overlap Send`);
+  for (const [name, control] of [['model', value.model], ['send', value.send]]) { assert.ok(control.x >= value.composer.x && control.right <= value.composer.right + 1, `${label} ${name} fits composer width`); assert.ok(control.y >= value.composer.y && control.bottom <= value.composer.bottom + 1, `${label} ${name} fits composer height`); }
   checks.push(label);
   return value;
 };
@@ -134,7 +154,10 @@ try {
     await expect(input).toHaveValue('');
     await input.fill(`布局 ${width} 输入检查`);
     await expect(input).toHaveValue(`布局 ${width} 输入检查`);
-    await expect(page.getByText('草稿已保存', { exact: true })).toBeVisible();
+    const draftStatus = page.locator('.composer-draft-status[role="status"].visually-hidden');
+    await expect(draftStatus).toHaveText('草稿已保存');
+    assert.equal(await draftStatus.evaluate(node => { const style = getComputedStyle(node), rect = node.getBoundingClientRect(); return rect.width <= 1 && rect.height <= 1 && style.clip.replace(/\s/g, '') === 'rect(0px,0px,0px,0px)' && style.display !== 'none' && style.visibility !== 'hidden' && node.getAttribute('aria-hidden') !== 'true'; }), true, 'Draft status stays live without taking visible composer space.');
+    await expect.poll(() => page.evaluate(key => window.screendeck.loadDraft(key), `project:${projectID}:task:${task.task_id}`)).toBe(`布局 ${width} 输入检查`);
     await screenshot(`three-pane-${width}.png`);
   }
   checks.push('center-input-at-1080');
@@ -146,10 +169,10 @@ try {
   await page.getByRole('button', { name: '收起右栏', exact: true }).click();
   await expect(page.locator('.detail-panel')).toBeHidden();
   const closed = await geometry();
-  near(closed.header.right, 1080, 'closed header expands to right edge');
-  near(closed.center.right, 1080, 'closed body expands to right edge');
-  near(closed.header.width - opened.header.width, opened.panel.width, 'header absorbs closed column width');
-  near(closed.center.width - opened.center.width, opened.panel.width, 'body absorbs closed column width');
+  near(closed.header.right, 1072, 'closed header expands to right edge');
+  near(closed.center.right, 1072, 'closed body expands to right edge');
+  near(closed.header.width - opened.header.width, opened.panel.width + 8, 'header absorbs closed column and gutter');
+  near(closed.center.width - opened.center.width, opened.panel.width + 8, 'body absorbs closed column and gutter');
   await expect(input).toHaveValue('布局 1080 输入检查');
   await page.getByRole('button', { name: '展开右栏', exact: true }).click();
   await split('close-reopen-expands-header-and-body');
@@ -165,6 +188,10 @@ try {
   await screenshot('three-pane-file-preview.png');
   await page.getByRole('tab', { name: '任务详情', exact: true }).click();
   await expect(page.locator('.detail-heading h1')).toHaveText(task.title);
+  await page.getByRole('tab', { name: '任务详情', exact: true }).focus();
+  await page.keyboard.press('Tab'); await page.keyboard.press('Shift+Tab');
+  await expect(page.getByRole('tab', { name: '任务详情', exact: true })).toBeFocused();
+  assert.equal(await page.getByRole('tab', { name: '任务详情', exact: true }).evaluate(node => getComputedStyle(node).outlineOffset), '-3px');
   checks.push('file-tab-return-to-task');
   for (const tab of ['分工', '时间线', '交付', '概览']) {
     await page.getByRole('tab', { name: tab, exact: true }).click();
@@ -178,10 +205,10 @@ try {
     assert.ok(compact.panel.x >= compact.center.x && compact.panel.y >= 0);
     assert.equal(compact.panelPosition, 'absolute', `compact-${width} uses overlay position`);
     near(compact.panel.width, 360, `compact-${width} panel width`);
-    near(compact.scrim.x, compact.center.x, `compact-${width} scrim starts at chat body`);
-    near(compact.scrim.x, compact.header.x, `compact-${width} scrim starts at chat header`);
-    near(compact.panel.right, width, `compact-${width} right edge`);
-    near(compact.panel.bottom, compact.viewport.height, `compact-${width} bottom edge`);
+    near(compact.scrim.x, compact.center.x - 8, `compact-${width} scrim starts at chat body`);
+    near(compact.scrim.x, compact.header.x - 8, `compact-${width} scrim starts at chat header`);
+    near(compact.panel.right, width - 8, `compact-${width} right edge`);
+    near(compact.panel.bottom, compact.viewport.height - 8, `compact-${width} bottom edge`);
     assert.equal(compact.scrimVisible, true);
     assert.equal(compact.horizontalOverflow, false);
     checks.push(`compact-${width}-drawer-in-viewport`);

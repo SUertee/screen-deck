@@ -1,17 +1,22 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import type { SessionManager } from '../core/session-manager.js';
-import { validatePreviewPlanScope, type TaskOrchestrator } from '../core/task-orchestrator.js';
-import { ApprovalService } from '../core/approval-service.js';
-import { checkDirectories, readBytes, StorageError } from '../core/private-storage.js';
-import { validateModel } from '../core/session-schema.js';
+import type { SessionManager } from '../core/sessions/session-manager.js';
+import { validatePreviewPlanScope, type TaskOrchestrator } from '../core/tasks/task-orchestrator.js';
+import { ApprovalService } from '../core/approvals/approval-service.js';
+import { checkDirectories, readBytes, StorageError } from '../core/storage/private-storage.js';
+import { validateModel } from '../core/sessions/session-schema.js';
 import type { ProjectWorkspaceReader } from '../projects/reader.js';
-import type { PreviewPlanScope } from '../shared/types.js';
-import type { AuthorizationInput, DriverRef, HarnessErrorCode, MaterialRef, TaskSessionRef, TaskTurnRef, ToolPolicy, WorkspaceRef } from '../shared/task-execution.js';
+import type { ModelSelection, PreviewPlanScope } from '../shared/types.js';
+import type { AuthorizationInput, DriverRef, ExecutionResult, HarnessErrorCode, MaterialRef, TaskSessionRef, TaskTurnRecord, TaskTurnRef, ToolPolicy, WorkspaceRef } from '../shared/task-execution.js';
+import { canonicalDigest } from '../core/storage/execution-records.js';
 import type { ElectronHost } from './electron-host.js';
 import { payload, textInput, uuidInput } from './ipc-validation.js';
 
-export const SIMULATION_DRIVER_IDS = ['simulation-success', 'simulation-failure', 'simulation-unknown'] as const;
+/** Supplied only by main after validating a runtime connection; no URLs or credentials cross IPC. */
+export interface TaskDriverRegistration {
+  current(): { drivers: DriverRef[]; model: ModelSelection };
+  verifyResult(turn: TaskTurnRecord, result: ExecutionResult): void | Promise<void>;
+}
 const digest = (value: unknown): string => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const stableUUID = (value: unknown): string => {
   const hash = digest(value);
@@ -42,15 +47,14 @@ const toolsInput = (input: unknown): ToolPolicy => {
   const value = payload(input, kind === 'none' ? ['kind'] : ['kind', 'readRoots', 'writeRoots', 'commands']);
   if (kind === 'none') return { kind: 'none' };
   if (kind !== 'restricted' || !Array.isArray(value.readRoots) || !Array.isArray(value.writeRoots) || !Array.isArray(value.commands) || value.readRoots.length > 32 || value.writeRoots.length > 32 || value.commands.length > 32) throw new StorageError('invalid-input', '工具范围无效。');
-  // This preview only simulates one file action. Command scope is deliberately unavailable.
-  if (value.commands.length) throw new StorageError('unsupported', '本轮模拟执行不支持命令许可。');
+  // Command tools remain unavailable in the current no-tools execution path.
+  if (value.commands.length) throw new StorageError('unsupported', '当前执行未开放命令许可。');
   return { kind: 'restricted', readRoots: value.readRoots.map(relativePath), writeRoots: value.writeRoots.map(relativePath), commands: [] };
 };
 const authorizationInput = (input: unknown): AuthorizationInput => {
   const value = payload(input, ['planID', 'expectedPlanVersion', 'workItemID', 'session', 'clientRequestID', 'text', 'materialIDs', 'workspaceID', 'driverID', 'model', 'tools']);
   if (!Number.isSafeInteger(value.expectedPlanVersion) || (value.expectedPlanVersion as number) < 1 || !Array.isArray(value.materialIDs) || value.materialIDs.length > 32) throw new StorageError('invalid-input', '计划版本或材料选择无效。');
   validateModel(value.model);
-  if ((value.model as { provider_id: string; model_id: string; variant?: string }).provider_id !== 'simulation' || (value.model as { model_id: string }).model_id !== 'simulation-v1' || (value.model as { variant?: string }).variant !== undefined) throw new StorageError('unsupported', '模拟执行仅支持明确标注的模拟模型。');
   const text = textInput(value.text, 1024 * 1024);
   if (!text.trim()) throw new StorageError('invalid-input', '请先填写本次工作项输入。');
   const materialIDs = value.materialIDs.map(id => textInput(id, 200));
@@ -71,8 +75,8 @@ const errorCode = (error: StorageError): HarnessErrorCode => {
 };
 
 /** Trusted fixed IPC for preview execution. It never loads provider credentials. */
-export function installTaskExecutionRoutes({ manager, plans, projects, host, previewRoot, approvals = new ApprovalService(previewRoot) }: {
-  manager: SessionManager; plans: TaskOrchestrator; projects: ProjectWorkspaceReader; host: ElectronHost; previewRoot: string; approvals?: ApprovalService;
+export function installTaskExecutionRoutes({ manager, plans, projects, host, previewRoot, approvals = new ApprovalService(previewRoot), execution }: {
+  manager: SessionManager; plans: TaskOrchestrator; projects: ProjectWorkspaceReader; host: ElectronHost; previewRoot: string; approvals?: ApprovalService; execution?: TaskDriverRegistration;
 }): void {
   const generation = randomUUID();
   const currentScope = (scope: PreviewPlanScope) => {
@@ -100,9 +104,41 @@ export function installTaskExecutionRoutes({ manager, plans, projects, host, pre
     if (latest.workspace.bindingDigest !== resolved.workspace.bindingDigest) throw new StorageError('conflict', '核对期间项目已刷新，请重新申请。');
     return resolved;
   };
+  const currentSelection = (): { drivers: DriverRef[]; model: ModelSelection } => {
+    if (!execution) throw new StorageError('unsupported', '真实执行器尚未配置。');
+    const selected = execution.current(); validateModel(selected.model);
+    if (selected.model.provider_id === 'simulation' || selected.model.model_id === 'simulation-v1') throw new StorageError('unsupported', '外部执行不能使用模拟模型标记。');
+    if (!Array.isArray(selected.drivers) || selected.drivers.length > 16 || selected.drivers.some(driver => !driver || driver.mode !== 'external' || typeof driver.driverID !== 'string' || !driver.driverID.trim() || driver.driverID.length > 200 || !/^[a-f0-9]{64}$/.test(driver.configDigest)) || new Set(selected.drivers.map(driver => driver.driverID)).size !== selected.drivers.length) throw new StorageError('unsupported', '外部执行器注册无效。');
+    return { drivers: selected.drivers.map(({ driverID, configDigest, mode }) => ({ driverID, configDigest, mode })), model: structuredClone(selected.model) };
+  };
+  const taskTurn = async (ref: TaskTurnRef): Promise<TaskTurnRecord> => {
+    const turn = await manager.getTaskTurn(ref);
+    if (!turn) throw new StorageError('conflict', '原任务轮次不存在。');
+    return turn;
+  };
+  const legacySession = async (ref: TaskSessionRef): Promise<boolean> => {
+    const session = await manager.loadTaskSession(ref);
+    if (!session) throw new StorageError('conflict', '原任务会话不存在。');
+    return session.turns.some(turn => turn.execution.spec.driver.mode === 'simulation');
+  };
+  const assertMutableSession = async (ref: TaskSessionRef): Promise<void> => {
+    if (await legacySession(ref)) throw new StorageError('unsupported', '模拟执行器已移除，这份记录仅保留历史；请新建真实执行会话。');
+  };
+  const assertMutableTurn = async (ref: TaskTurnRef): Promise<void> => {
+    await assertMutableSession(ref.session);
+    await taskTurn(ref);
+  };
   const driverRef = (driverID: string): DriverRef => {
-    if (!(SIMULATION_DRIVER_IDS as readonly string[]).includes(driverID)) throw new StorageError('unsupported', '当前只开放模拟执行器。');
-    return { driverID, configDigest: digest([driverID, 'simulation-v1', generation]), mode: 'simulation' };
+    const driver = currentSelection().drivers.find(value => value.driverID === driverID);
+    if (!driver) throw new StorageError('unsupported', '执行器未注册或尚未就绪。');
+    return driver;
+  };
+  const validateSelection = (driver: DriverRef, model: ModelSelection): void => {
+    const current = currentSelection();
+    const registered = current.drivers.find(value => value.driverID === driver.driverID);
+    if (!registered) throw new StorageError('unsupported', '执行器未注册或尚未就绪。');
+    if (canonicalDigest(registered) !== canonicalDigest(driver)) throw new StorageError('conflict', '执行器配置或连接代次已变化，请重新申请。');
+    if (canonicalDigest(current.model) !== canonicalDigest(model)) throw new StorageError('unsupported', '只能使用本次已登记的执行模型。');
   };
   const resolveMaterials = async (scope: PreviewPlanScope, ids: string[]) => {
     const registered = currentScope(scope);
@@ -119,19 +155,14 @@ export function installTaskExecutionRoutes({ manager, plans, projects, host, pre
     return result;
   };
   plans.configureExecution({
-    manager, approvals, resolveWorkspace, driverRef, resolveMaterials,
+    manager, approvals, resolveWorkspace, driverRef, validateSelection, resolveMaterials,
     checkWorkspaceBinding: (scope, workspace) => {
       const current = workspaceOf(scope).workspace;
       if (current.workspaceID !== workspace.workspaceID || current.bindingDigest !== workspace.bindingDigest) throw new StorageError('conflict', '项目注册绑定已刷新，请重新申请授权。');
     },
-    verifyResult: async (turn, result, ref) => {
-      if (turn.execution.spec.driver.mode !== 'simulation') throw new StorageError('unsupported', '当前只能验收明确标注的模拟结果。');
-      const session = await manager.loadTaskSession(ref.session);
-      if (!session) throw new StorageError('conflict', '原任务会话不存在。');
-      const refs = [...result.artifacts, ...result.evidence];
-      if (!refs.length) return;
-      const material = await resolveMaterials({ project_id: session.scope.project_id, task_id: session.scope.task_id }, refs.map(ref => ref.referenceID));
-      for (let index = 0; index < refs.length; index++) if (material[index]?.reference.contentDigest !== refs[index].contentDigest) throw new StorageError('conflict', '成果内容已变化，不能验收此版本。');
+    verifyResult: async (turn, result) => {
+      if (!execution || turn.execution.spec.driver.mode !== 'external' || turn.execution.spec.tools.kind !== 'none' || turn.execution.spec.materials.length || result.artifacts.length || result.evidence.length || !result.summary.trim()) throw new StorageError('unsupported', '仅可验收真实无工具执行的纯文本结果。');
+      await execution.verifyResult(turn, result);
     },
     actor: () => 'local-desktop-user',
   });
@@ -142,7 +173,7 @@ export function installTaskExecutionRoutes({ manager, plans, projects, host, pre
   manager.subscribeTask(event => host.broadcastTask(event));
   handler('task-execution-options', input => {
     const scope = scopeInput(input);
-    return { workspace: workspaceOf({ project_id: scope.projectID, task_id: scope.taskID }).workspace, drivers: SIMULATION_DRIVER_IDS.map(driverRef), model: { provider_id: 'simulation', model_id: 'simulation-v1' } };
+    return { workspace: workspaceOf({ project_id: scope.projectID, task_id: scope.taskID }).workspace, ...currentSelection() };
   });
   handler('create-task-session', input => {
     const value = payload(input, ['title', 'projectID', 'taskID']); const scope = scopeInput({ projectID: value.projectID, taskID: value.taskID });
@@ -151,23 +182,45 @@ export function installTaskExecutionRoutes({ manager, plans, projects, host, pre
   });
   handler('list-task-sessions', input => manager.listTaskSessions(scopeInput(input)));
   handler('load-task-session', input => manager.loadTaskSession(sessionInput(input)));
-  handler('request-execution-authorization', input => plans.requestExecutionAuthorization(authorizationInput(input)));
-  handler('list-execution-approvals', input => plans.listExecutionApprovals(turnInput(input)));
-  handler('decide-execution-approval', input => {
+  handler('request-execution-authorization', async input => {
+    const value = authorizationInput(input);
+    driverRef(value.driverID);
+    await assertMutableSession(value.session);
+    return plans.requestExecutionAuthorization(value);
+  });
+  handler('list-execution-approvals', async input => {
+    const ref = turnInput(input);
+    await taskTurn(ref);
+    return await legacySession(ref.session) ? approvals.listExecutionApprovals(ref) : plans.listExecutionApprovals(ref);
+  });
+  handler('decide-execution-approval', async input => {
     const value = payload(input, ['requestID', 'choice']);
     if (value.choice !== 'approve' && value.choice !== 'reject') throw new StorageError('invalid-input', '请选择批准或拒绝。');
-    return plans.decideApproval({ requestID: uuidInput(value.requestID), choice: value.choice });
+    const requestID = uuidInput(value.requestID);
+    const request = await approvals.loadExecutionApproval(requestID);
+    if (!request) throw new StorageError('conflict', '审批申请不存在。');
+    await assertMutableTurn(request.target.turn);
+    return plans.decideApproval({ requestID, choice: value.choice });
   });
-  handler('start-task-execution', input => {
+  handler('start-task-execution', async input => {
     const value = payload(input, ['turn', 'approvalID']);
-    return plans.startExecution({ turn: turnInput(value.turn), approvalID: uuidInput(value.approvalID) });
+    const turn = turnInput(value.turn);
+    await assertMutableTurn(turn);
+    return plans.startExecution({ turn, approvalID: uuidInput(value.approvalID) });
   });
-  handler('cancel-task-execution', input => plans.cancelExecution(turnInput(input)));
-  handler('reply-task-permission', input => {
+  handler('cancel-task-execution', async input => {
+    const turn = turnInput(input); await assertMutableTurn(turn);
+    return plans.cancelExecution(turn);
+  });
+  handler('reply-task-permission', async input => {
     const value = payload(input, ['turn', 'approvalID']);
-    return plans.replyToolPermission({ turn: turnInput(value.turn), approvalID: uuidInput(value.approvalID) });
+    const turn = turnInput(value.turn); await assertMutableTurn(turn);
+    return plans.replyToolPermission({ turn, approvalID: uuidInput(value.approvalID) });
   });
-  handler('reconcile-task-execution', input => plans.reconcileExecution(turnInput(input)));
+  handler('reconcile-task-execution', async input => {
+    const turn = turnInput(input); await assertMutableTurn(turn);
+    return plans.reconcileExecution(turn);
+  });
   handler('get-work-item-review', async input => {
     const turn = turnInput(input);
     return plans.getWorkItemReview(turn);
@@ -176,7 +229,11 @@ export function installTaskExecutionRoutes({ manager, plans, projects, host, pre
     const value = payload(input, ['turn', 'resultDigest', 'choice', 'comment']);
     if (value.choice !== 'accept' && value.choice !== 'reject' || typeof value.resultDigest !== 'string' || !/^[a-f0-9]{64}$/.test(value.resultDigest)) throw new StorageError('invalid-input', '验收决定或成果摘要无效。');
     const turn = turnInput(value.turn);
+    await assertMutableTurn(turn);
     return plans.reviewWorkItem({ turn, resultDigest: value.resultDigest, choice: value.choice, ...(value.comment === undefined ? {} : { comment: textInput(value.comment, 4096) }) });
   });
-  handler('retry-task-pending-writes', input => manager.retryTaskPendingWrites(sessionInput(input)));
+  handler('retry-task-pending-writes', async input => {
+    const ref = sessionInput(input); await assertMutableSession(ref);
+    return manager.retryTaskPendingWrites(ref);
+  });
 }

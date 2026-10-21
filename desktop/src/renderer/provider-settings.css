@@ -1,0 +1,22 @@
+/* finesse · component: provider-connection · register=product
+ * states: default · hover · focus-visible · active · disabled · loading · error · success
+ * tokens: inherited (design-model.yaml) */
+.provider-connection .provider-field-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px 12px; min-width: 0; }
+.provider-connection .provider-field-heading label { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 550; color: var(--ink-1); margin: 0; }
+.provider-connection .provider-field-heading .text-button { min-height: 24px; font-size: 11px; }
+.provider-key-status { color: var(--ink-2); font-size: 11px; white-space: nowrap; }
+.provider-connection .provider-model-field > select { width: 100%; min-width: 0; min-height: 40px; padding: 9px 12px; border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--ink-1); background: var(--bg); font: inherit; text-overflow: ellipsis; outline: 2px solid transparent; outline-offset: 3px; }
+.provider-connection .provider-model-field > select:focus-visible { border-color: var(--ink-2); outline-color: var(--ink-2); }
+.provider-connection [aria-invalid="true"] { border-color: var(--down); }
+.provider-connection .provider-feedback { min-width: 0; min-height: 0; }
+.provider-connection .provider-feedback .notice { overflow-wrap: anywhere; }
+.provider-result { padding: 9px 0; color: var(--ink-2); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.provider-result.is-unverified { color: var(--ink-1); }
+.provider-connection .button.primary { white-space: nowrap; outline: 2px solid transparent; outline-offset: 3px; }
+@media (hover: hover) { .provider-connection .button.primary:hover:not(:disabled), .provider-connection .button.primary.is-hover { background: var(--ink-2); } }
+.provider-connection .button.primary:focus-visible, .provider-connection .button.primary.is-focus { outline-color: var(--ink-2); }
+.provider-connection .button.primary:active:not(:disabled), .provider-connection .button.primary.is-active { opacity: .82; }
+.provider-connection :disabled { cursor: not-allowed; }
+.provider-connection .button:disabled, .provider-connection select:disabled, .provider-connection fieldset:disabled .provider-field-heading { opacity: .5; }
+.provider-connection[data-state="loading"] .button.primary { min-width: 112px; }
+@media (max-width: 600px) { .provider-connection .provider-field-heading { gap: 4px 8px; } .provider-connection .settings-actions { width: 100%; justify-content: flex-end; } }

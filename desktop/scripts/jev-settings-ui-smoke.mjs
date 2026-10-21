@@ -1,0 +1,44 @@
+import { chromium, expect } from '@playwright/test';
+import { build } from 'esbuild';
+import assert from 'node:assert/strict';
+import { mkdir, writeFile } from 'node:fs/promises';
+const source = `
+import React,{useState} from 'react';import{createRoot}from'react-dom/client';
+import './src/renderer/styles.css';import './src/renderer/tasks/tasks.css';
+import{TaskJevAdvice}from'./src/renderer/tasks/TaskJevAdvice';import{JevConfigurationArea}from'./src/renderer/tasks/JevConfigurationArea';
+const state={settings:{hasKey:false,model:''},counts:{save:0,preview:0,request:0,apply:0},failure:'Jev：timeout',visits:0,hold:false,pending:null};
+const plan={id:'11111111-1111-4111-8111-111111111111',version:1,title:'合成任务',work_items:[{id:'22222222-2222-4222-8222-222222222222',title:'讨论合成修复方案',status:'planned',kind:'discussion'}],task:{materials:[]}};
+const preview={base:{planID:plan.id,baseVersion:1,workItemID:plan.work_items[0].id},request:{model:'jev-latest',state:{title:'合成摘要'},questions:{assignee:{type:'choice',criteria:{human:'人工',chat:'讨论'}}}},candidates:[{id:'human',label:'人工'},{id:'chat',label:'讨论'}]};
+const result={id:'synthetic-advice',advice:{candidateChanges:[{candidate:{id:'human',label:'人工'}}],reasons:['应用根据固定候选结果整理的说明。']}};
+const api={getJevSettings:async()=>state.settings,saveJevSettings:async input=>{state.counts.save++;state.settings={hasKey:true,model:input.model};return state.settings;},previewJevAdvice:async()=>{state.counts.preview++;return{id:'synthetic-ticket',preview};},requestJevAdvice:async()=>{state.counts.request++;if(state.hold)return new Promise(resolve=>state.pending=resolve);if(state.failure)throw new Error(state.failure);return result;},applyJevAdvice:async()=>{state.counts.apply++;return plan;}};
+window.jevFixture={state,resolve:()=>{state.pending?.(result);state.pending=null;},switchPlan:null};
+function Demo(){const[current,setCurrent]=useState(plan);const[show,setShow]=useState(false),[revision,setRevision]=useState(0);window.jevFixture.switchPlan=()=>setCurrent({...plan,id:'33333333-3333-4333-8333-333333333333'});return <main style={{padding:20,maxWidth:640}}><div hidden={show} data-testid="task-view"><TaskJevAdvice api={api} plan={current} disabled={false} jevSettingsRevision={revision} onConfigureJev={()=>{state.visits++;setShow(true);}}/></div>{show&&<div data-testid="settings-view"><h3>Agent 设置</h3><label>执行 Agent<select aria-label="执行 Agent"><option>Codex</option><option>OpenCode</option></select></label><JevConfigurationArea api={api} autoFocus/><button onClick={()=>{setShow(false);setRevision(v=>v+1);}}>返回任务</button></div>}</main>};
+createRoot(document.getElementById('root')).render(<Demo/>);`;
+const built = await build({stdin:{contents:source,loader:'tsx',resolveDir:process.cwd()},bundle:true,platform:'browser',format:'iife',write:false,outfile:'fixture.js',loader:{'.svg':'dataurl'}});
+const js = built.outputFiles.find(f=>f.path.endsWith('.js')).text,css=built.outputFiles.find(f=>f.path.endsWith('.css')).text;
+const artifacts='/private/tmp/screendeck-next-jev/artifacts';await mkdir(artifacts,{recursive:true});
+let browser;const checks=[];let externalRequests=0;const errors=[];
+try{
+ browser=await chromium.launch({headless:true,...(process.env.SCREENDECK_CHROMIUM_EXECUTABLE?{executablePath:process.env.SCREENDECK_CHROMIUM_EXECUTABLE}:{})});const page=await browser.newPage({viewport:{width:400,height:900}});
+ page.on('pageerror',e=>errors.push(e.message));await page.route('**/*',route=>{externalRequests++;return route.abort();});
+ await page.setContent('<div id="root"></div>');await page.addStyleTag({content:css});await page.addScriptTag({content:js});
+ await page.getByText('获取分工建议',{exact:true}).click();await expect(page.getByTestId('task-view').locator('input[type=password]')).toHaveCount(0);await page.getByRole('button',{name:'配置 Jev',exact:true}).click();await expect(page.getByRole('region',{name:'任务分工判断 / Jev'})).toBeVisible();assert.deepEqual(await page.getByLabel('执行 Agent',{exact:true}).locator('option').allTextContents(),['Codex','OpenCode']);checks.push('task links to a separate judgment area in Agent settings, without selector pollution');
+ await expect(page.getByLabel('Jev 模型版本')).toHaveValue('jev-latest');await expect(page.getByText(/请勿粘贴到聊天/)).toBeVisible();checks.push('default alias and dedicated key entry');await page.screenshot({path:artifacts+'/jev-entry-narrow.png',fullPage:true});
+ await page.getByLabel('Jev API 密钥').fill('temporary-unsaved-key');const summary=page.getByTestId('settings-view').locator('details > summary');await summary.focus();await page.keyboard.press('Enter');await expect(page.getByLabel('Jev API 密钥')).not.toBeVisible();await page.keyboard.press('Enter');await expect(page.getByLabel('Jev API 密钥')).toHaveValue('');checks.push('keyboard collapse clears unsaved key');await page.getByLabel('Jev API 密钥').fill('synthetic-browser-key');await page.getByRole('button',{name:'保存 Jev 设置',exact:true}).click();
+ await expect(page.getByText('已保存到本机；尚未验证官方账户或发起付费请求。')).toBeVisible();await expect(page.getByLabel('Jev API 密钥')).toHaveValue('');
+ assert.equal(await page.evaluate(()=>window.jevFixture.state.counts.request),0);checks.push('save only, key cleared, no model request');await page.getByRole('button',{name:'返回任务',exact:true}).click();await expect(page.getByRole('button',{name:'Jev 设置',exact:true})).toBeVisible();
+ await page.getByLabel('Jev 工作项').selectOption('22222222-2222-4222-8222-222222222222');
+ const makePreview=async()=>{await page.getByRole('button',{name:'预览发送内容',exact:true}).click();await expect(page.getByRole('button',{name:'发送给 Jev',exact:true})).toBeDisabled();};
+ const confirm=async()=>{await page.getByLabel('确认发送以上内容并产生本次调用费用').check();await page.getByRole('button',{name:'发送给 Jev',exact:true}).click();};
+ await makePreview();await confirm();await expect(page.getByRole('alert')).toContainText('无法确认服务是否已处理或计费');await expect(page.getByText('发送给 TypeSafe 的内容',{exact:true})).toHaveCount(0);checks.push('timeout consumes old preview and explains unknown cost');await page.screenshot({path:artifacts+'/jev-timeout-narrow.png',fullPage:true});
+ await makePreview();assert.equal(await page.evaluate(()=>window.jevFixture.state.counts.request),1);checks.push('fresh preview requires fresh budget confirmation');
+ await page.evaluate(()=>window.jevFixture.state.failure='Jev：authentication');await confirm();await expect(page.getByRole('alert')).toContainText('拒绝了认证');await page.getByRole('button',{name:'Jev 设置',exact:true}).click();await expect(page.getByRole('region',{name:'任务分工判断 / Jev'})).toBeVisible();await expect(page.getByLabel('Jev API 密钥')).toBeVisible();checks.push('authentication has a working settings jump');await page.getByRole('button',{name:'返回任务',exact:true}).click();
+ await page.evaluate(()=>window.jevFixture.state.failure=null);await makePreview();await confirm();await expect(page.getByText('建议：人工',{exact:true})).toBeVisible();assert.equal(await page.evaluate(()=>window.jevFixture.state.counts.apply),0);checks.push('advice never auto applies');
+ await page.getByRole('button',{name:'不采用',exact:true}).click();await makePreview();await page.evaluate(()=>window.jevFixture.state.hold=true);
+ await page.getByLabel('确认发送以上内容并产生本次调用费用').check();await page.getByRole('button',{name:'发送给 Jev',exact:true}).click();
+ await page.evaluate(()=>window.jevFixture.switchPlan());await page.evaluate(()=>window.jevFixture.resolve());await expect(page.getByText('建议：人工',{exact:true})).toHaveCount(0);checks.push('late response cannot move to another task');
+ await page.screenshot({path:artifacts+'/jev-narrow.png',fullPage:true});
+ const overflow=await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth);assert.equal(overflow,false);assert.deepEqual(errors,[]);assert.equal(externalRequests,0);
+ checks.push('400px layout, no page errors or external network');
+ await writeFile(artifacts+'/ui-report.json',JSON.stringify({checks,externalRequests,errors,overflow},null,2));console.log(JSON.stringify({checks,externalRequests,errors}));
+}finally{await browser?.close();}

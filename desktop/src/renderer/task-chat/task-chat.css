@@ -1,0 +1,36 @@
+/* finesse · component: task-chat · register=product
+ * states: default · hover · focus-visible · active · disabled · loading · error · success
+ * tokens: inherited from renderer/styles.css */
+.task-chat { padding: 18px; color: var(--ink-1); background: var(--bg); border: 1px solid var(--border); border-radius: var(--r); min-width: 0; display: grid; gap: 14px; }
+.task-chat h3, .task-chat p { margin: 0; }
+.task-chat p { color: var(--ink-2); line-height: 1.6; overflow-wrap: anywhere; }
+.task-chat h3 { font-size: 14px; font-weight: 600; }
+.task-chat header, .task-chat footer, .task-chat-link { display: flex; gap: 8px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.task-chat header > div { min-width: 0; flex: 1 1 180px; }
+.task-chat button { min-height: 32px; padding: 7px 10px; border: 1px solid var(--border-strong); border-radius: var(--r-sm); outline: 2px solid transparent; outline-offset: 2px; }
+.task-chat footer { justify-content: flex-end; }
+.task-chat footer > button:last-child { background: var(--accent); color: var(--on-accent); min-width: 140px; }
+.task-chat button:disabled { opacity: .5; cursor: not-allowed; }
+.task-chat button:focus-visible, .task-chat input:focus-visible, .task-chat select:focus-visible, .task-chat textarea:focus-visible, .task-chat summary:focus-visible { outline: 2px solid var(--ink-1); outline-offset: 2px; }
+@media (hover: hover) { .task-chat button:hover:not(:disabled) { background: var(--selected); color: var(--ink-1); } .task-chat-material:hover { background: var(--panel-2); } }
+.task-chat button:active:not(:disabled) { background: var(--selected); color: var(--ink-1); transform: translateY(1px); }
+.task-chat fieldset { margin: 0; padding: 12px; border: 1px solid var(--border); border-radius: var(--r-sm); min-width: 0; display: grid; gap: 12px; }
+.task-chat legend { padding: 0 4px; font-weight: 550; }
+.task-chat-targets { display: flex; flex-wrap: wrap; gap: 8px 18px; }
+.task-chat-targets label { display: flex; align-items: center; min-height: 32px; gap: 5px; }
+.task-chat-field { display: grid; gap: 8px; min-width: 0; }
+.task-chat-field textarea, .task-chat-field select { width: 100%; }
+.task-chat-field textarea { min-height: 100px; }
+.task-chat-material { display: flex; align-items: flex-start; gap: 9px; padding: 8px; border-radius: var(--r-sm); min-width: 0; }
+.task-chat-material input { margin: 3px 0 0; flex: none; }
+.task-chat-material > span { display: grid; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+.task-chat-material small, .task-chat-material > span > span { color: var(--ink-2); line-height: 1.5; }
+.task-chat-context { background: var(--panel-2); border-radius: var(--r-sm); padding: 12px; display: grid; gap: 8px; min-width: 0; }
+.task-chat-path, .task-chat pre { font-family: var(--mono); overflow-wrap: anywhere; white-space: pre-wrap; }
+.task-chat .task-chat-feedback { min-height: 2lh; }
+.task-chat [role=alert] { color: var(--down); }
+.task-chat-approval { display: grid; gap: 8px; border-top: 1px solid var(--border); padding-top: 12px; }
+.task-chat-approval pre { max-height: 180px; overflow: auto; margin: 0; }
+.task-chat summary { cursor: pointer; padding: 5px 0; }
+@media (pointer: coarse) { .task-chat button, .task-chat-targets label, .task-chat-material { min-height: 44px; } }
+@media (max-width: 420px) { .task-chat { padding: 12px; } .task-chat fieldset { padding: 8px; } }

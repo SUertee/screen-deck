@@ -25,3 +25,8 @@ docs/
 /desktop/.env
 /desktop/.env.*
 /desktop/*.tsbuildinfo
+
+# 本地工作树、交互预览与临时交接
+/.worktrees/
+/desktop/work/
+/JEV-HANDOFF.md

@@ -1,0 +1,29 @@
+/* finesse · component: chat-task-composer · product · existing tokens */
+.chat-task-composer .modal-body { display: grid; gap: 12px; min-width: 0; }
+.chat-task-composer p { margin: 0; color: var(--ink-2); line-height: 1.6; }
+.chat-task-composer fieldset { display: grid; gap: 12px; margin: 0; padding: 12px; min-width: 0; border: 1px solid var(--border); border-radius: var(--r-sm); }
+.chat-task-composer legend { padding: 0 4px; font-weight: 550; }
+.chat-task-composer label { display: grid; gap: 6px; min-width: 0; }
+.chat-task-composer :is(input,textarea) { width: 100%; }
+.chat-task-composer .chat-task-excerpt-toggle { display: flex; align-items: center; min-height: 32px; gap: 8px; }
+.chat-task-composer input[type=checkbox] { width: auto; }
+.chat-task-composer small { color: var(--ink-2); line-height: 1.5; overflow-wrap: anywhere; }
+.chat-task-composer pre { max-height: 160px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; margin: 8px 0; font-family: var(--mono); }
+.chat-task-composer summary { cursor: pointer; padding: 6px 0; }
+.chat-task-composer .chat-task-feedback { min-height: 2lh; }
+.chat-task-composer [role=alert] { color: var(--down); }
+.chat-task-composer footer { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+.chat-task-composer footer button, .chat-task-composer .modal-body > button { min-height: 32px; padding: 7px 12px; border: 1px solid var(--border-strong); border-radius: var(--r-sm); }
+.chat-task-composer .chat-task-save { background: var(--accent); color: var(--on-accent); min-width: 140px; }
+.chat-task-composer button:disabled { opacity: .5; cursor: not-allowed; }
+.chat-task-composer :is(button,input,textarea,summary):focus-visible { outline: 2px solid var(--ink-1); outline-offset: 2px; }
+@media (hover:hover) { .chat-task-composer footer button:hover:not(:disabled) { background: var(--selected); color: var(--ink-1); } }
+.chat-task-composer button:active:not(:disabled) { transform: translateY(1px); }
+@media (pointer:coarse) { .chat-task-composer footer button, .chat-task-composer .chat-task-excerpt-toggle { min-height: 44px; } }
+
+.task-goal-fields { border: 0 !important; padding: 0 !important; gap: 12px; }
+.task-goal-primary { font-size: 15px; font-weight: 550; }
+.task-goal-primary textarea { font-size: 14px; font-weight: 400; line-height: 1.7; }
+.chat-task-composer .task-goal-title-preview { font-size: 12px; color: var(--ink-2); overflow-wrap: anywhere; }
+.task-goal-optional > summary { font-size: 12px; color: var(--ink-2); }
+.task-goal-optional > div { display: grid; gap: 14px; padding-top: 12px; }

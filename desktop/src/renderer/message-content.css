@@ -1,0 +1,164 @@
+/* finesse · component: message-copy · register=product
+ * states: default · hover · focus-visible · active · disabled · loading · error · success
+ * tokens: inherited (renderer/styles.css) */
+.copy-control {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  max-width: 100%;
+}
+
+.copy-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 94px;
+  min-height: 44px;
+  padding: 7px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+  background: transparent;
+  color: var(--ink-2);
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.copy-button-icon {
+  flex: none;
+}
+
+.copy-button-label {
+  white-space: nowrap;
+}
+
+@media (hover: hover) {
+  .copy-button:hover:not(:disabled),
+  .copy-button.is-hover:not(:disabled) {
+    background: var(--selected);
+    color: var(--ink-1);
+  }
+}
+
+.copy-button:focus-visible,
+.copy-button.is-focus {
+  outline-color: var(--ink-1);
+}
+
+.copy-button:active:not(:disabled),
+.copy-button.is-active:not(:disabled) {
+  transform: translateY(1px);
+  background: var(--selected);
+  color: var(--ink-1);
+}
+
+.copy-button:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+
+.copy-button[data-copy-state="loading"] {
+  background: var(--panel-2);
+  color: var(--ink-2);
+  opacity: 1;
+  cursor: progress;
+}
+
+.copy-button[data-copy-state="loading"] .copy-button-icon {
+  animation: message-copy-spin 1.2s linear infinite;
+}
+
+.copy-button[data-copy-state="error"] {
+  border-color: var(--border-strong);
+  background: var(--down-soft);
+  color: var(--down);
+}
+
+.copy-button[data-copy-state="success"] {
+  border-color: var(--border);
+  background: var(--panel-2);
+  color: var(--ink-1);
+}
+
+.copy-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.markdown .markdown-code-block {
+  min-width: 0;
+  max-width: 100%;
+  margin: 12px 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--panel-2);
+}
+
+.markdown-code-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding: 0 6px 0 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.markdown-code-language {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink-2);
+  font-family: var(--mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.markdown .markdown-code-pre {
+  max-width: 100%;
+  margin: 0;
+  padding: 14px;
+  overflow-x: auto;
+  border-radius: 0;
+  background: transparent;
+  white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
+  tab-size: 4;
+}
+
+.markdown .markdown-code-pre:focus-visible {
+  outline: 2px solid var(--ink-1);
+  outline-offset: -3px;
+}
+
+.markdown .markdown-code-pre > code {
+  display: block;
+  font-size: inherit;
+  white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+@keyframes message-copy-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .copy-button[data-copy-state="loading"] .copy-button-icon {
+    animation: none;
+  }
+}

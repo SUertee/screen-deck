@@ -4,15 +4,15 @@ import { mkdtemp, readFile, readdir, realpath, writeFile } from 'node:fs/promise
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { ApprovalService } from '../../src/core/approval-service.js';
-import { TaskOrchestrator } from '../../src/core/task-orchestrator.js';
-import { SessionManager } from '../../src/core/session-manager.js';
-import { SessionHistoryStore } from '../../src/core/session-history-store.js';
-import { TaskSessionHistoryStore } from '../../src/core/task-session-history-store.js';
-import { FakeTaskExecutionDriver } from '../../src/core/fake-task-execution-driver.js';
-import { canonicalDigest } from '../../src/core/execution-records.js';
-import { taskDigest } from '../../src/core/task-session-schema.js';
-import type { ExecutionDriver } from '../../src/core/execution-driver.js';
+import { ApprovalService } from '../../src/core/approvals/approval-service.js';
+import { TaskOrchestrator } from '../../src/core/tasks/task-orchestrator.js';
+import { SessionManager } from '../../src/core/sessions/session-manager.js';
+import { SessionHistoryStore } from '../../src/core/sessions/session-history-store.js';
+import { TaskSessionHistoryStore } from '../../src/core/sessions/task-session-history-store.js';
+import { TaskDriverFixture } from '../helpers/task-driver-fixture.js';
+import { canonicalDigest } from '../../src/core/storage/execution-records.js';
+import { taskDigest, taskResultDigest } from '../../src/core/sessions/task-session-schema.js';
+import type { ExecutionDriver } from '../../src/core/sessions/execution-driver.js';
 import type { AuthorizationInput, TaskTurnRecord, TaskTurnRef, ToolPolicy } from '../../src/shared/task-execution.js';
 import type { PlanWorkItem } from '../../src/shared/types.js';
 
@@ -25,14 +25,14 @@ const chat: ExecutionDriver = { capabilities: { chat: true, tools: false, remote
 async function fixture(items: PlanWorkItem[] = [work()]) {
   const root = await temp();
   const scope = { project_id: `project-${randomUUID()}`, task_id: 'task-001' };
-  const taskStore = new TaskSessionHistoryStore(root); const driver = new FakeTaskExecutionDriver({ stepDelayMs: 0 });
+  const taskStore = new TaskSessionHistoryStore(root); const driver = new TaskDriverFixture({ stepDelayMs: 0 });
   const approvals = new ApprovalService(root); const manager = new SessionManager({ store: new SessionHistoryStore(join(root, 'sessions')), driver: chat, task: { store: taskStore, driver } });
   const workspace = { workspaceID: randomUUID(), bindingDigest: 'a'.repeat(64) };
-  const configuration = { manager, approvals, resolveWorkspace: async () => ({ workspace, root }), driverRef: (driverID: string) => ({ driverID, configDigest: 'b'.repeat(64), mode: 'simulation' as const }), resolveMaterials: async () => [], verifyResult: async () => {}, actor: () => 'test-user' };
+  const configuration = { manager, approvals, resolveWorkspace: async () => ({ workspace, root }), driverRef: (driverID: string) => ({ driverID, configDigest: 'b'.repeat(64), mode: driverID.startsWith('simulation-') ? 'simulation' as const : 'external' as const }), validateSelection: () => {}, resolveMaterials: async () => [], verifyResult: async () => {}, actor: () => 'test-user' };
   const plans = new TaskOrchestrator(root); plans.configureExecution(configuration);
   const plan = await plans.createPlan('Simulation plan', items, scope);
   const session = await manager.createTaskSession({ title: 'Task', projectID: scope.project_id, taskID: scope.task_id });
-  const input = (itemID = items[0]!.id, tools: ToolPolicy = { kind: 'none' }): AuthorizationInput => ({ planID: plan.id, expectedPlanVersion: plan.version, workItemID: itemID, session: { format: 'task-v2', sessionID: session.conversation_id }, clientRequestID: randomUUID(), text: 'Simulate only', materialIDs: [], workspaceID: workspace.workspaceID, driverID: 'simulation-success', model, tools });
+  const input = (itemID = items[0]!.id, tools: ToolPolicy = { kind: 'none' }): AuthorizationInput => ({ planID: plan.id, expectedPlanVersion: plan.version, workItemID: itemID, session: { format: 'task-v2', sessionID: session.conversation_id }, clientRequestID: randomUUID(), text: 'Simulate only', materialIDs: [], workspaceID: workspace.workspaceID, driverID: tools.kind === 'none' ? 'fixture-success' : 'simulation-success', model, tools });
   return { root, scope, taskStore, driver, approvals, manager, workspace, configuration, plans, plan, session, input };
 }
 async function waitState(manager: SessionManager, turn: TaskTurnRef, state: TaskTurnRecord['state']): Promise<TaskTurnRecord> {
@@ -105,6 +105,22 @@ test('save, request, approve, start and manual acceptance remain separate; dupli
   } finally { await f.manager.shutdown(); }
 });
 
+test('external coordination requires trusted registration and refuses tools or materials before resolving them', async () => {
+  const f = await fixture(); let materialReads = 0;
+  const external = { ...f.configuration, driverRef: (driverID: string) => ({ driverID, configDigest: 'b'.repeat(64), mode: 'external' as const }), resolveMaterials: async () => { materialReads++; return []; } };
+  try {
+    const unregistered = new TaskOrchestrator(f.root); unregistered.configureExecution({ ...external, validateSelection: undefined });
+    const input = { ...f.input(), driverID: 'fixture-external', model: { provider_id: 'fixture-provider', model_id: 'fixture-model' } };
+    await assert.rejects(unregistered.requestExecutionAuthorization(input), /尚未注册/);
+    const noSimulationFallback = new TaskOrchestrator(f.root); noSimulationFallback.configureExecution({ ...f.configuration, validateSelection: undefined });
+    await assert.rejects(noSimulationFallback.requestExecutionAuthorization({ ...f.input(), driverID: 'simulation-success' }), /尚未注册/);
+    const registered = new TaskOrchestrator(f.root); registered.configureExecution({ ...external, validateSelection: () => {} });
+    await assert.rejects(registered.requestExecutionAuthorization({ ...input, tools: { kind: 'restricted', readRoots: ['.'], writeRoots: [], commands: [] } }), /仅支持本次输入/);
+    await assert.rejects(registered.requestExecutionAuthorization({ ...input, materialIDs: ['source-reference'] }), /仅支持本次输入/);
+    assert.equal(materialReads, 0); assert.equal(f.driver.counts.created, 0); assert.deepEqual((await f.manager.loadTaskSession(input.session))!.turns, []);
+  } finally { await f.manager.shutdown(); }
+});
+
 test('editing an approved prepared plan invalidates permission, settles Turn, then writes version; partial failures preserve old plan bytes', async () => {
   const f = await fixture();
   try {
@@ -136,6 +152,32 @@ test('rejected startup remains a recorded human decision and settles prepared Tu
   } finally { await f.manager.shutdown(); }
 });
 
+test('an explicit v1 to v2 plan upgrade invalidates the old approved Turn without starting it', async () => {
+  const f = await fixture();
+  try {
+    const prepared = await f.plans.requestExecutionAuthorization(f.input());
+    await f.plans.decideApproval({ requestID: prepared.request.id, choice: 'approve' });
+    const upgraded = await f.plans.savePlan({ ...f.plan, schema_version: 2 }, f.plan.version);
+    assert.equal(upgraded.id, f.plan.id); assert.equal(upgraded.version, 2); assert.equal(upgraded.schema_version, 2);
+    assert.equal((await f.manager.getTaskTurn(prepared.turn)).state, 'failed');
+    assert.ok((await f.approvals.loadExecutionApproval(prepared.request.id))?.invalidation);
+    assert.equal((await f.plans.startExecution({ turn: prepared.turn, approvalID: prepared.request.id })).status, 'not-started');
+    await assert.rejects(f.plans.requestExecutionAuthorization(f.input()), /版本已变化/);
+    assert.deepEqual(f.driver.counts, { created: 0, submitted: 0, permissions: 0 });
+  } finally { await f.manager.shutdown(); }
+});
+
+test('v2 Agent assignments remain planning metadata and cannot enter the old execution path', async () => {
+  const f = await fixture();
+  try {
+    const upgraded = await f.plans.savePlan({ ...f.plan, schema_version: 2, work_items: f.plan.work_items.map(item => ({ ...item, assignee: 'agent' as const, agentID: 'opencode', expected_result: '' })) }, 1);
+    assert.deepEqual(f.driver.counts, { created: 0, submitted: 0, permissions: 0 });
+    await assert.rejects(f.plans.requestExecutionAuthorization({ ...f.input(), expectedPlanVersion: upgraded.version }), /仅保存计划/);
+    assert.equal((await f.manager.loadTaskSession({ format: 'task-v2', sessionID: f.session.conversation_id }))?.turns.length, 0);
+    assert.deepEqual(f.driver.counts, { created: 0, submitted: 0, permissions: 0 });
+  } finally { await f.manager.shutdown(); }
+});
+
 test('all Sessions of a task share a gate, and a second coordinator never steals an O_EXCL task lock', async () => {
   const f = await fixture();
   try {
@@ -164,6 +206,8 @@ test('unknown result blocks restart, new Session attempts, plan edits and accept
     const session = await f.manager.createTaskSession({ title: 'Another task conversation', projectID: f.scope.project_id, taskID: f.scope.task_id });
     await assert.rejects(f.plans.requestExecutionAuthorization({ ...f.input(), session: { format: 'task-v2', sessionID: session.conversation_id } }), /同一任务有未决/);
     await assert.rejects(f.plans.savePlan({ ...f.plan, title: 'Cannot edit unknown' }, 1), /未核对结果/);
+    await assert.rejects(f.plans.savePlan({ ...f.plan, schema_version: 2 }, 1), /未核对结果/);
+    assert.equal((await f.plans.loadPlan(f.plan.id))?.schema_version, 1);
     await assert.rejects(f.plans.getWorkItemReview(prepared.turn), /仅可验收/);
     assert.deepEqual(f.driver.counts, { created: 1, submitted: 1, permissions: 0 });
   } finally { await f.manager.shutdown(); }
@@ -203,7 +247,7 @@ test('terminal Turn with unconfirmed permission still blocks task edits, new att
   const record = await f.taskStore.load(f.session.conversation_id); assert.ok(record); const turn = record.turns[0]!;
   const action = { kind: 'file-write' as const, path: 'simulation/result.txt', content: 'simulation only' };
   turn.execution.permissions.push({ externalRequestID: 'uncertain-receipt', action, actionDigest: taskDigest(action), approvalID: randomUUID(), delivery: 'unknown' }); await f.taskStore.save(record, record.revision);
-  const restarted = new SessionManager({ store: new SessionHistoryStore(join(f.root, 'sessions')), driver: chat, task: { store: new TaskSessionHistoryStore(f.root), driver: new FakeTaskExecutionDriver({ stepDelayMs: 0 }) } });
+  const restarted = new SessionManager({ store: new SessionHistoryStore(join(f.root, 'sessions')), driver: chat, task: { store: new TaskSessionHistoryStore(f.root), driver: new TaskDriverFixture({ stepDelayMs: 0 }) } });
   const plans = new TaskOrchestrator(f.root); plans.configureExecution({ ...f.configuration, manager: restarted });
   try {
     await assert.rejects(plans.requestExecutionAuthorization(f.input()), /同一任务有未决/);
@@ -234,5 +278,24 @@ test('saved finished review remains readable when new artifact verification is u
     const reader = new TaskOrchestrator(f.root); reader.configureExecution({ ...f.configuration, verifyResult: async () => { throw new Error('Source unavailable'); } });
     assert.deepEqual((await reader.getWorkItemReview(prepared.turn)).acceptance, accepted);
     await assert.rejects(reader.reviewWorkItem({ turn: prepared.turn, resultDigest: view.resultDigest, choice: 'accept' }), /Source unavailable/);
+  } finally { await f.manager.shutdown(); }
+});
+
+test('simulation keeps the existing digest and stored acceptance even when only assistant message bytes change', async () => {
+  const f = await fixture();
+  try {
+    const prepared = await approveAndStart(f, { ...f.input(), driverID: 'simulation-success' }); const turn = await waitState(f.manager, prepared.turn, 'finished');
+    const view = await f.plans.getWorkItemReview(prepared.turn);
+    assert.equal(view.resultDigest, taskDigest({ specDigest: turn.execution.specDigest, result: turn.execution.result ?? null }));
+    assert.equal(taskResultDigest(turn), view.resultDigest, 'the old simulation call shape remains valid');
+    const accepted = await f.plans.reviewWorkItem({ turn: prepared.turn, resultDigest: view.resultDigest, choice: 'accept' });
+    const file = join(f.root, 'execution-acceptances-v1', `${accepted.id}.json`); const bytes = await readFile(file);
+    const record = (await f.taskStore.load(f.session.conversation_id))!;
+    const assistant = record.messages.find(message => message.turn_id === prepared.turn.turnID && message.role === 'assistant')!;
+    assistant.text = 'Only simulation Message bytes changed; the original result contract is retained.'; assistant.message_id = randomUUID();
+    await f.taskStore.save(record, record.revision);
+    const retained = await f.plans.getWorkItemReview(prepared.turn);
+    assert.equal(retained.resultDigest, view.resultDigest); assert.deepEqual(retained.acceptance, accepted); assert.deepEqual(await readFile(file), bytes);
+    assert.equal(f.driver.counts.created, 1);
   } finally { await f.manager.shutdown(); }
 });

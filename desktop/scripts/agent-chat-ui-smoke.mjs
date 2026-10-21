@@ -15,6 +15,7 @@ const launchHome = path.join(temporaryRoot, 'home');
 const artifactRoot = path.join(desktopRoot, 'artifacts', 'agent-chat-ui-smoke');
 const binaryPath = path.join(fixtureRoot, 'node-acp-fixture.mjs');
 const fixtureKey = 'agent-gui-only-synthetic-key', modelID = 'agent-gui-fixture-model';
+const providerURL = 'https://fixture.example/v1';
 const timestamp = '2026-10-14T00:00:00.000Z', ordinaryID = randomUUID(), ordinaryTurnID = randomUUID();
 const ordinary = { schema_version: 1, conversation_id: ordinaryID, title: '普通聊天离线记录', scope: { kind: 'local_chat', local_chat_id: randomUUID() }, created_at: timestamp, updated_at: timestamp, revision: 1, turns: [{ turn_id: ordinaryTurnID, client_request_id: randomUUID(), requested_model: { provider_id: 'synthetic', model_id: 'saved-offline-model' }, state: 'finished', created_at: timestamp, updated_at: timestamp, draft_revision: 0 }], messages: ['user', 'assistant'].map((role, index) => ({ message_id: randomUUID(), turn_id: ordinaryTurnID, role, text: '离线普通聊天原文 ' + (index + 1), created_at: timestamp, updated_at: timestamp })) };
 const ordinaryFile = path.join(previewRoot, 'sessions', '2026', '10', '14', ordinaryID + '.json');
@@ -39,11 +40,25 @@ const resize = async (width, height) => {
   await expect.poll(() => page.evaluate(() => [innerWidth, innerHeight])).toEqual([width, height]);
 };
 const noPrompt = async () => { const value = await counts(); assert.equal(value.promptSubmissions, 0); assert.equal(value.sessionCreates, 0); };
+const saveUnverifiedModel = async modal => {
+  const before = (await application.evaluate(() => globalThis.__agentChatUICounts)).modelCatalogChecks;
+  await application.evaluate(() => { globalThis.__agentChatUIModelCheckAllowed = true; });
+  try {
+    await modal.getByRole('button', { name: '校验并保存', exact: true }).click();
+    await expect(modal.getByRole('button', { name: '保存（未验证）', exact: true })).toBeEnabled();
+    await expect(modal.getByRole('status').filter({ hasText: '服务不支持模型列表。' })).toBeVisible();
+  } finally { await application.evaluate(() => { globalThis.__agentChatUIModelCheckAllowed = false; }); }
+  await modal.getByRole('button', { name: '保存（未验证）', exact: true }).click();
+  await expect(modal.getByRole('status').filter({ hasText: '连接已保存，模型未验证。' })).toBeVisible();
+  await expect(modal.getByLabel('API 密钥', { exact: true })).toHaveValue('');
+  await expect(modal.getByLabel('API 密钥', { exact: true })).toHaveAttribute('placeholder', '•••••• · 输入新密钥替换');
+  assert.equal((await application.evaluate(() => globalThis.__agentChatUICounts)).modelCatalogChecks, before + 1);
+};
 const start = async (manualChoose = false) => {
   await application.evaluate(({ dialog }, binaryPath) => { dialog.showOpenDialog = async () => { globalThis.__agentChatUICounts.chooserCalls++; return { canceled: false, filePaths: [binaryPath] }; }; }, binaryPath);
   await page.getByRole('button', { name: '设置', exact: true }).click();
   const modal = page.getByRole('dialog', { name: '设置', exact: true });
-  await modal.getByRole('tab', { name: '编码工具', exact: true }).click();
+  await modal.getByRole('tab', { name: 'Agent 设置', exact: true }).click();
   const chooserBefore = (await application.evaluate(() => globalThis.__agentChatUICounts)).chooserCalls;
   if (manualChoose) {
     await modal.getByTestId('opencode-binary-choose').click();
@@ -60,13 +75,24 @@ const start = async (manualChoose = false) => {
 const launch = async () => {
   application = await electron.launch({ args: [desktopRoot], env: launchEnv, timeout: 30_000 });
   application.process().stderr?.on('data', bytes => console.error('[electron] ' + String(bytes).replaceAll(fixtureKey, '[synthetic-key]').slice(0, 4096)));
-  await application.evaluate(({ net, session, ipcMain }) => {
-    globalThis.__agentChatUICounts = { chooserCalls: 0, httpAttempts: 0, ordinarySends: 0 };
-    const wrap = original => (input, ...args) => { const url = new URL(typeof input === 'string' ? input : input?.url ?? String(input)); if (['http:', 'https:'].includes(url.protocol)) { globalThis.__agentChatUICounts.httpAttempts++; throw new Error('Agent chat GUI fixture forbids HTTP.'); } return original(input, ...args); };
+  await application.evaluate(({ net, session, ipcMain }, { providerURL, fixtureKey }) => {
+    globalThis.__agentChatUIModelCheckAllowed = false;
+    globalThis.__agentChatUICounts = { chooserCalls: 0, httpAttempts: 0, ordinarySends: 0, modelCatalogChecks: 0 };
+    const wrap = original => (input, ...args) => {
+      const url = new URL(typeof input === 'string' ? input : input?.url ?? String(input));
+      const method = String(args[0]?.method ?? input?.method ?? 'GET').toUpperCase();
+      const headers = new Headers(args[0]?.headers ?? input?.headers);
+      // Model-directory discovery is outside this Agent regression: fulfill only this exact synthetic request.
+      if (globalThis.__agentChatUIModelCheckAllowed && url.href === providerURL + '/models' && method === 'GET' && headers.get('authorization') === 'Bearer ' + fixtureKey) {
+        globalThis.__agentChatUICounts.modelCatalogChecks++; return Promise.resolve(new Response('{}', { status: 404, headers: { 'Content-Type': 'application/json' } }));
+      }
+      if (['http:', 'https:'].includes(url.protocol)) { globalThis.__agentChatUICounts.httpAttempts++; throw new Error('Agent chat GUI fixture forbids HTTP.'); }
+      return original(input, ...args);
+    };
     globalThis.fetch = wrap(globalThis.fetch.bind(globalThis)); net.fetch = wrap(net.fetch.bind(net));
     session.defaultSession.webRequest.onBeforeRequest({ urls: ['http://*/*', 'https://*/*'] }, (_details, callback) => { globalThis.__agentChatUICounts.httpAttempts++; callback({ cancel: true }); });
     globalThis.__installAgentChatGuard = () => { ipcMain.removeHandler('screendeck:send-message'); ipcMain.handle('screendeck:send-message', () => { globalThis.__agentChatUICounts.ordinarySends++; throw new Error('GUI smoke never sends ordinary model chat.'); }); };
-  });
+  }, { providerURL, fixtureKey });
   page = await application.firstWindow({ timeout: 30_000 });
   await expect(page.getByRole('heading', { name: '今天想推进什么？' })).toBeVisible({ timeout: 30_000 });
   await application.evaluate(() => globalThis.__installAgentChatGuard());
@@ -78,7 +104,7 @@ const sendText = async text => { await composer().fill(text); await page.getByRo
 const openAgent = async () => { await page.locator('.session-button[data-chat-source="agent"]').first().click(); await expect(picker()).toHaveValue('agent'); };
 const assertFit = async () => {
   const metrics = await page.evaluate(() => {
-    const selectors = ['.composer', '.chat-source-select', '.agent-model-label', '.send-button'];
+    const selectors = ['.composer', '.chat-source-select', '.model-select', '.send-button'];
     return { overflow: document.documentElement.scrollWidth > innerWidth + 1, rects: selectors.flatMap(selector => { const node = document.querySelector(selector); if (!node) return []; const rect = node.getBoundingClientRect(); return [{ selector, left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom }]; }) };
   });
   assert.equal(metrics.overflow, false); for (const rect of metrics.rects) { assert.ok(rect.left >= 0 && rect.right <= await page.evaluate(() => innerWidth) + 1, JSON.stringify(rect)); assert.ok(rect.top >= 0 && rect.bottom <= await page.evaluate(() => innerHeight) + 1, JSON.stringify(rect)); }
@@ -92,14 +118,20 @@ try {
     assert.deepEqual(await page.evaluate(() => window.screendeck.getOpenCodeStatus()), { state: 'stopped' });
     assert.equal((await application.evaluate(() => globalThis.__agentChatUICounts)).chooserCalls, 0); await noPrompt();
   });
-  await check('source-selection-is-readonly-and-not-ready-has-tools-settings-action', async () => {
+  await check('new-agent-draft-keeps-idle-connection-in-settings-button-without-starting', async () => {
     await composer().fill('模型新聊天草稿'); await picker().selectOption('agent');
-    await expect(composer()).toHaveValue(''); await expect(page.getByText('OpenCode 尚未连接。', { exact: true })).toBeVisible();
+    await expect(composer()).toHaveValue(''); await expect(page.getByText('OpenCode 尚未连接。', { exact: true })).toHaveCount(0);
+    await expect(page.locator('.composer-source-feedback')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: '打开 Agent 设置', exact: true })).toHaveCount(0);
     await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeDisabled();
-    await page.getByRole('button', { name: '打开编码工具设置', exact: true }).click();
+    const connection = page.getByRole('button', { name: 'Agent 设置', exact: true });
+    await expect(connection).toContainText('未连接'); await expect(connection).toHaveAttribute('title', /未连接.*打开 Agent 设置/);
+    await resize(860, 600); await assertFit(); await screenshot('agent-chat-idle-connect-860x600.png'); await resize(1440, 940);
+    await connection.click();
     const modal = page.getByRole('dialog', { name: '设置', exact: true });
-    await expect(modal.getByRole('tab', { name: '编码工具', exact: true })).toHaveAttribute('aria-selected', 'true');
-    await modal.getByRole('button', { name: '完成', exact: true }).click(); await noPrompt();
+    await expect(modal.getByRole('tab', { name: 'Agent 设置', exact: true })).toHaveAttribute('aria-selected', 'true');
+    await modal.getByRole('button', { name: '完成', exact: true }).click();
+    assert.deepEqual(await page.evaluate(() => window.screendeck.getOpenCodeStatus()), { state: 'stopped' }); await noPrompt();
   });
   await check('new-drafts-are-separated-by-source-without-creating-session', async () => {
     await composer().fill('Agent 新聊天草稿'); await picker().selectOption('model'); await expect(composer()).toHaveValue('模型新聊天草稿');
@@ -110,15 +142,17 @@ try {
     await picker().selectOption('model'); await page.locator('.model-select').click();
     const modal = page.getByRole('dialog', { name: '设置', exact: true });
     await expect(modal.getByRole('tab', { name: '模型服务', exact: true })).toHaveAttribute('aria-selected', 'true');
-    await modal.getByLabel('API 地址', { exact: true }).fill('https://fixture.example/v1');
-    await modal.getByLabel('模型名称', { exact: true }).fill(modelID); await modal.getByLabel('API 密钥', { exact: true }).fill(fixtureKey);
-    await modal.getByLabel('记住 API 密钥', { exact: true }).uncheck(); await modal.getByRole('button', { name: '保存连接', exact: true }).click();
+    await modal.getByLabel('API 地址', { exact: true }).fill(providerURL);
+    await modal.getByLabel('模型', { exact: true }).fill(modelID); await modal.getByLabel('API 密钥', { exact: true }).fill(fixtureKey);
+    await saveUnverifiedModel(modal);
     await modal.getByRole('button', { name: '取消', exact: true }).click();
     assert.deepEqual(await page.evaluate(() => window.screendeck.getOpenCodeStatus()), { state: 'stopped' }); await noPrompt();
   });
   await check('explicit-start-verifies-connection-but-creates-no-native-chat', async () => {
-    await start(true); await picker().selectOption('agent'); await expect(page.getByLabel('OpenCode 已绑定模型', { exact: true })).toHaveText(modelID);
-    await expect(page.locator('.model-select')).toHaveCount(0); await expect(page.getByRole('button', { name: 'OpenCode 聊天暂不支持 Deck', exact: true })).toBeDisabled();
+    await start(true); await picker().selectOption('agent');
+    await expect(page.getByRole('button', { name: 'Agent 设置', exact: true })).toHaveAttribute('title', new RegExp(modelID));
+    await expect(page.locator('.model-select')).toHaveCount(1); await expect(page.locator('.agent-model-label')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'OpenCode 聊天暂不支持 Deck', exact: true })).toBeDisabled();
     const value = await counts(); assert.equal(value.controls.titleDisabled, true); assert.equal(value.controls.toolPolicyDenied, true); await noPrompt();
   });
   const firstText = '第一轮：只讨论合成目标。', secondText = '第二轮：继续上一轮的合成上下文。';
@@ -127,7 +161,7 @@ try {
     // and frozen runtime config. This exercises UI gating, not credential changes.
     const publicSettings = await page.evaluate(() => window.screendeck.getSettings());
     await application.evaluate(({ BrowserWindow }, settings) => BrowserWindow.getAllWindows()[0].webContents.send('screendeck:event', { type: 'settings-updated', settings: { ...settings, hasKey: false } }), publicSettings);
-    await expect(page.locator('.composer-source-feedback')).toContainText('无工具文本');
+    await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeEnabled();
     await sendText(firstText);
     await expect.poll(async () => (await page.evaluate(() => window.screendeck.bootstrap())).agentSessions.length).toBe(1);
     agentID = (await page.evaluate(() => window.screendeck.bootstrap())).agentSessions[0].conversation_id; continuityID = agentID;
@@ -176,8 +210,10 @@ try {
   });
   await check('narrow-source-picker-focus-and-composer-remain-visible', async () => {
     await openAgent(); await composer().fill('窄窗键盘操作草稿'); await resize(860, 780); await assertFit(); await picker().focus();
-    await expect(picker()).toBeFocused(); const outline = await picker().evaluate(node => getComputedStyle(node).outlineWidth); assert.notEqual(outline, '0px');
-    await picker().press('Tab'); await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeFocused();
+    await expect(picker()).toBeFocused(); const outline = await picker().evaluate(node => getComputedStyle(node.closest('.chat-source-control')).outlineWidth); assert.notEqual(outline, '0px');
+    await picker().press('Tab'); await expect(page.getByRole('button', { name: 'Agent 设置', exact: true })).toBeFocused();
+    await page.keyboard.press('Tab'); await expect(page.getByRole('button', { name: '展开输入框', exact: true })).toBeFocused();
+    await page.keyboard.press('Tab'); await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeFocused();
     await screenshot('agent-chat-narrow-focus-860x780.png'); await resize(1440, 940);
   });
   await check('disconnect-stays-unknown-with-explicit-new-chat-and-no-auto-retry', async () => {
@@ -196,9 +232,9 @@ try {
     assert.deepEqual(await page.evaluate(() => window.screendeck.getOpenCodeStatus()), { state: 'stopped' }); await screenshot('agent-chat-restart-readonly-1440x940.png');
   });
   await check('reconnected-new-generation-does-not-rebind-old-agent-history', async () => {
-    const modalOpen = page.getByRole('button', { name: '打开编码工具设置', exact: true }); await modalOpen.click();
+    const modalOpen = page.getByRole('button', { name: '打开 Agent 设置', exact: true }); await modalOpen.click();
     const modal = page.getByRole('dialog', { name: '设置', exact: true }); await modal.getByRole('tab', { name: '模型服务', exact: true }).click();
-    await modal.getByLabel('API 密钥', { exact: true }).fill(fixtureKey); await modal.getByRole('button', { name: '保存连接', exact: true }).click(); await modal.getByRole('button', { name: '取消', exact: true }).click();
+    await modal.getByLabel('API 密钥', { exact: true }).fill(fixtureKey); await saveUnverifiedModel(modal); await modal.getByRole('button', { name: '取消', exact: true }).click();
     await page.getByRole('button', { name: firstText + '，OpenCode 聊天', exact: true }).click(); agentID = continuityID;
     const oldBinding = (await load()).binding, before = await counts(); await start();
     await expect(page.locator('.composer-source-feedback')).toContainText('之前的连接'); assert.deepEqual((await load()).binding, oldBinding);
@@ -221,7 +257,7 @@ try {
     const value = await counts(); assert.equal(value.externalModelRequests, 0); assert.equal(value.loadCalls, 0); assert.deepEqual(value.protocolProblems, []); assert.equal(value.promptSubmissions, 5);
     appCounts.push(await application.evaluate(() => globalThis.__agentChatUICounts)); for (const value of appCounts) { assert.equal(value.httpAttempts, 0); assert.equal(value.ordinarySends, 0); }
   });
-  const report = { agentChatUISmoke: 'passed', checks, screenshots, temporaryRoot, runtimeCounts: await counts(), appCounts, fixture: 'production main/preload/renderer with generated Node SDK 1.8 ACP v1 agent', limitations: ['No official OpenCode binary, model, tools or user data are used.', 'A narrow synthetic settings-updated event exercises the UI Agent credential gate without changing the actual frozen main runtime config.', 'HTTP and ordinary-send guards begin after Electron launch and initialization, respectively; counters cover smoke interactions.'] };
+  const report = { agentChatUISmoke: 'passed', checks, screenshots, temporaryRoot, runtimeCounts: await counts(), appCounts, fixture: 'production main/preload/renderer with generated Node SDK 1.8 ACP v1 agent', limitations: ['No official OpenCode binary, model, tools or user data are used.', 'Only the exact synthetic provider models GET with its synthetic Bearer key is fulfilled locally with HTTP 404; model discovery is outside this Agent regression.', 'A narrow synthetic settings-updated event exercises the UI Agent credential gate without changing the actual frozen main runtime config.', 'HTTP and ordinary-send guards begin after Electron launch and initialization, respectively; counters cover smoke interactions.'] };
   await rm(path.join(artifactRoot, 'failure.json'), { force: true }); await rm(path.join(artifactRoot, 'failure.png'), { force: true });
   await writeFile(path.join(artifactRoot, 'report.json'), JSON.stringify(report, null, 2) + '\n'); console.log(JSON.stringify(report));
 } catch (error) {

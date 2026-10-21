@@ -1,4 +1,4 @@
-import { BrowserWindow, dialog, ipcMain, net, protocol } from 'electron';
+import { BrowserWindow, clipboard, dialog, ipcMain, net, protocol } from 'electron';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { StorageError } from '../core/index.js';
@@ -37,6 +37,8 @@ export class ElectronHost {
     for (const window of this.windows) if (!window.isDestroyed()) window.webContents.send('screendeck:task-event', event);
   }
 
+  writeClipboardText(text: string): void { clipboard.writeText(text); }
+
   handle(channel: string, operation: (input: unknown) => unknown): void {
     ipcMain.handle(`screendeck:${channel}`, async (event, input) => {
       const window = BrowserWindow.fromWebContents(event.sender);
@@ -74,6 +76,7 @@ export class ElectronHost {
       width: compact ? 430 : 1440, height: compact ? 310 : 940,
       minWidth: compact ? 360 : 860, minHeight: compact ? 220 : 600,
       title: compact ? 'ScreenDeck Deck' : 'ScreenDeck Preview',
+      icon: path.join(this.desktopRoot, 'brand', 'screendeck-icon-black.png'),
       backgroundColor: compact ? '#111113' : '#fcfcfd', show: false,
       titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 18, y: 17 },
       ...(compact ? { alwaysOnTop: true } : {}),

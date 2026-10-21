@@ -59,17 +59,26 @@ const openSettings = async () => { await page.getByRole('button', { name: '设�
 
 try {
   application = await electron.launch({ args: [desktopRoot], env: launchEnv, timeout: 30_000 });
-  await application.evaluate(({ net, session, dialog }) => {
-    globalThis.__settingsLayoutCounts = { networkAttempts: 0, ordinarySends: 0, taskStarts: 0, runtimeStarts: 0, runtimeStops: 0, chooserCalls: 0 };
+  await application.evaluate(({ net, session, dialog }, fixture) => {
+    globalThis.__settingsLayoutCounts = { modelListRequests: 0, networkAttempts: 0, ordinarySends: 0, taskStarts: 0, runtimeStarts: 0, runtimeStops: 0, chooserCalls: 0 };
     const guard = original => (input, ...args) => {
       const url = typeof input === 'string' ? input : input?.url ?? String(input);
       if (/^https?:/i.test(url)) { globalThis.__settingsLayoutCounts.networkAttempts++; throw new Error('Settings layout smoke forbids all HTTP.'); }
       return original(input, ...args);
     };
-    globalThis.fetch = guard(globalThis.fetch.bind(globalThis)); net.fetch = guard(net.fetch.bind(net));
+    const blockedFetch = guard(globalThis.fetch.bind(globalThis));
+    globalThis.fetch = async (input, init) => {
+      if (String(input) === fixture.url + '/models') {
+        if (init?.method !== 'GET' || new Headers(init.headers).get('Authorization') !== 'Bearer ' + fixture.key) throw new Error('Unexpected synthetic list request.');
+        globalThis.__settingsLayoutCounts.modelListRequests++;
+        return new Response(JSON.stringify({ data: [{ id: fixture.modelID }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      return blockedFetch(input, init);
+    };
+    net.fetch = guard(net.fetch.bind(net));
     session.defaultSession.webRequest.onBeforeRequest({ urls: ['http://*/*', 'https://*/*'] }, (_details, callback) => { globalThis.__settingsLayoutCounts.networkAttempts++; callback({ cancel: true }); });
     dialog.showOpenDialog = async () => { globalThis.__settingsLayoutCounts.chooserCalls++; throw new Error('Settings layout smoke must not choose or launch a runtime.'); };
-  });
+  }, { url: fixtureURL, key: fixtureKey, modelID: fixtureModel });
   page = await application.firstWindow({ timeout: 30_000 });
   await expect(page.getByRole('heading', { name: '今天想推进什么？' })).toBeVisible({ timeout: 30_000 });
   // Install after initialization so real registered handlers cannot replace guards.
@@ -93,14 +102,14 @@ try {
   await check('large-settings-opens-models-and-keeps-three-panels-mounted', async () => {
     await openSettings();
     await expect(tab('模型服务')).toHaveAttribute('aria-selected', 'true');
-    for (const name of ['模型服务', '编码工具', '本地数据']) await expect(tab(name)).toBeVisible();
+    for (const name of ['模型服务', 'Agent 设置', '本地数据']) await expect(tab(name)).toBeVisible();
     await expect(panel('models')).toBeVisible(); await expect(panel('tools')).toBeHidden(); await expect(panel('data')).toBeHidden();
     for (const section of ['models', 'tools', 'data']) await expect(panel(section)).toHaveCount(1);
     await expect(modal().locator('.settings-layout')).toBeVisible(); await expect(modal().locator('.settings-content')).toBeVisible();
     const box = await modal().boundingBox(); assert.ok(box.width > 700 && box.height > 400, JSON.stringify(box));
     assert.equal(await page.locator('#app-shell').evaluate(node => node.inert), true);
     await expect(panel('models').getByLabel('API 地址', { exact: true })).toHaveValue(bootstrap.settings.baseURL);
-    await expect(panel('models').getByLabel('模型名称', { exact: true })).toHaveValue(bootstrap.settings.modelID);
+    await expect(panel('models').getByLabel('模型', { exact: true })).toHaveValue(bootstrap.settings.modelID);
     initialSaveGeometry = await modal().getByTestId('settings-save-model').evaluate(node => {
       const content = node.closest('.settings-content');
       const button = node.getBoundingClientRect(), frame = content.getBoundingClientRect();
@@ -116,7 +125,7 @@ try {
   await check('category-content-isolated-and-runtime-stays-stopped', async () => {
     await expect(panel('models').getByLabel('API 地址', { exact: true })).toBeVisible();
     await expect(modal().getByRole('region', { name: 'OpenCode 执行器', exact: true })).toBeHidden();
-    await tab('编码工具').click(); await expect(panel('tools')).toBeVisible(); await expect(panel('models')).toBeHidden();
+    await tab('Agent 设置').click(); await expect(panel('tools')).toBeVisible(); await expect(panel('models')).toBeHidden();
     await expect(modal().getByLabel('API 密钥', { exact: true })).toBeHidden(); await expect(modal().getByTestId('settings-save-model')).toBeHidden();
     await expect(modal().getByTestId('opencode-runtime-status')).toContainText('未启动');
     await scrollContentTop(); await screenshot('settings-tools-1440x940.png');
@@ -127,7 +136,7 @@ try {
   });
   await check('category-keyboard-navigation-uses-visible-panel-and-focus-trap', async () => {
     await tab('模型服务').click(); await tab('模型服务').focus(); await page.keyboard.press('ArrowRight');
-    await expect(tab('编码工具')).toHaveAttribute('aria-selected', 'true'); await expect(tab('编码工具')).toBeFocused();
+    await expect(tab('Agent 设置')).toHaveAttribute('aria-selected', 'true'); await expect(tab('Agent 设置')).toBeFocused();
     await page.keyboard.press('End'); await expect(tab('本地数据')).toHaveAttribute('aria-selected', 'true');
     await page.keyboard.press('Home'); await expect(tab('模型服务')).toHaveAttribute('aria-selected', 'true');
     for (let index = 0; index < 24; index++) { await page.keyboard.press('Tab'); await verifyFocus(); }
@@ -136,12 +145,12 @@ try {
   });
   await check('switching-categories-retains-nonsecret-and-synthetic-key-drafts', async () => {
     await panel('models').getByLabel('API 地址', { exact: true }).fill(fixtureURL);
-    await panel('models').getByLabel('模型名称', { exact: true }).fill(fixtureModel);
+    await panel('models').getByLabel('模型', { exact: true }).fill(fixtureModel);
     await panel('models').getByLabel('API 密钥', { exact: true }).fill(fixtureKey);
-    await tab('编码工具').click(); await expect(modal().getByTestId('opencode-runtime-start')).toBeDisabled();
+    await tab('Agent 设置').click(); await expect(modal().getByTestId('opencode-runtime-start')).toBeDisabled();
     await tab('本地数据').click(); await tab('模型服务').click();
     await expect(panel('models').getByLabel('API 地址', { exact: true })).toHaveValue(fixtureURL);
-    await expect(panel('models').getByLabel('模型名称', { exact: true })).toHaveValue(fixtureModel);
+    await expect(panel('models').getByLabel('模型', { exact: true })).toHaveValue(fixtureModel);
     await expect(panel('models').getByLabel('API 密钥', { exact: true })).toHaveValue(fixtureKey);
     assert.equal((await page.evaluate(() => window.screendeck.getSettings())).hasKey, false, 'typing and switching categories must not save a credential');
   });
@@ -152,32 +161,32 @@ try {
     await openSettings();
     await expect(tab('模型服务')).toHaveAttribute('aria-selected', 'true');
     await expect(panel('models').getByLabel('API 地址', { exact: true })).toHaveValue(fixtureURL);
-    await expect(panel('models').getByLabel('模型名称', { exact: true })).toHaveValue(fixtureModel);
+    await expect(panel('models').getByLabel('模型', { exact: true })).toHaveValue(fixtureModel);
     await expect(panel('models').getByLabel('API 密钥', { exact: true })).toHaveValue('');
     assert.equal((await page.evaluate(() => window.screendeck.getSettings())).hasKey, false);
   });
   await check('composer-model-button-targets-models-after-a-different-category', async () => {
-    await tab('编码工具').click(); await page.keyboard.press('Escape');
+    await tab('Agent 设置').click(); await page.keyboard.press('Escape');
     await page.locator('.model-select').click(); await expect(tab('模型服务')).toHaveAttribute('aria-selected', 'true');
     await expect(panel('models')).toBeVisible(); await expect(panel('tools')).toBeHidden();
     await page.keyboard.press('Escape'); await expect(page.locator('.model-select')).toBeFocused();
     await openSettings();
   });
-  await check('real-settings-save-stores-synthetic-memory-key-without-starting-runtime', async () => {
+  await check('real-settings-validates-and-persists-synthetic-key-without-starting-runtime', async () => {
     await panel('models').getByLabel('API 密钥', { exact: true }).fill(fixtureKey);
-    await panel('models').getByLabel('记住 API 密钥', { exact: true }).uncheck();
+    await expect(panel('models').getByLabel('记住 API 密钥', { exact: true })).toHaveCount(0);
     await modal().getByTestId('settings-save-model').click();
-    await expect.poll(() => page.evaluate(() => window.screendeck.getSettings())).toEqual({ baseURL: fixtureURL, modelID: fixtureModel, hasKey: true, credentialStorage: 'memory' });
+    await expect.poll(() => page.evaluate(() => window.screendeck.getSettings())).toEqual({ baseURL: fixtureURL, modelID: fixtureModel, hasKey: true, credentialStorage: 'file' });
     await expect(panel('models').getByLabel('API 密钥', { exact: true })).toHaveValue('');
-    await tab('编码工具').click();
+    await tab('Agent 设置').click();
     await expect(modal().getByTestId('opencode-runtime-start')).toBeDisabled();
     await expect(modal().getByTestId('opencode-binary-choose')).toBeEnabled();
     assert.deepEqual(await page.evaluate(() => window.screendeck.getOpenCodeStatus()), { state: 'stopped' });
-    assert.deepEqual(await counts(), { networkAttempts: 0, ordinarySends: 0, taskStarts: 0, runtimeStarts: 0, runtimeStops: 0, chooserCalls: 0 });
+    assert.deepEqual(await counts(), { modelListRequests: 1, networkAttempts: 0, ordinarySends: 0, taskStarts: 0, runtimeStarts: 0, runtimeStops: 0, chooserCalls: 0 });
   });
   for (const [width, height] of [[1440, 940], [1280, 900], [860, 780]]) await check(`settings-all-categories-fit-${width}x${height}`, async () => {
     await resize(width, height);
-    for (const [name, section] of [['模型服务', 'models'], ['编码工具', 'tools'], ['本地数据', 'data']]) {
+    for (const [name, section] of [['模型服务', 'models'], ['Agent 设置', 'tools'], ['本地数据', 'data']]) {
       await tab(name).click(); await expect(panel(section)).toBeVisible(); await verifyFit();
       await tab(name).focus(); await verifyFocus();
       if (width === 860 || width === 1280 && section === 'models') {
@@ -192,7 +201,7 @@ try {
     await expect(page.getByRole('textbox', { name: '输入消息', exact: true })).toBeVisible(); await expect(page.locator('.detail-panel')).toBeHidden();
     assert.equal(await page.locator('#app-shell').evaluate(node => node.inert), false);
     const saved = await page.evaluate(() => window.screendeck.bootstrap()); assert.deepEqual(saved.sessions, []); assert.deepEqual(saved.taskSessions ?? [], []); assert.deepEqual(saved.projects, []);
-    assert.deepEqual(await counts(), { networkAttempts: 0, ordinarySends: 0, taskStarts: 0, runtimeStarts: 0, runtimeStops: 0, chooserCalls: 0 });
+    assert.deepEqual(await counts(), { modelListRequests: 1, networkAttempts: 0, ordinarySends: 0, taskStarts: 0, runtimeStarts: 0, runtimeStops: 0, chooserCalls: 0 });
   });
   const report = { settingsLayoutSmoke: 'passed', checks, screenshots, initialSaveGeometry, temporaryRoot, ...await counts(), guardScope: 'Network guard installed after Electron launch; execution guards installed after the first screen. Counts cover settings interactions, not prelaunch/bootstrap.', limitations: ['Generated private/preview roots only; production bootstrap and settings IPC were used.', 'Only forbidden model, execution, runtime and native chooser side effects were guarded.', 'No real key, model request, OpenCode process, user data, installation or migration.'] };
   await rm(path.join(artifactRoot, 'failure.json'), { force: true }); await rm(path.join(artifactRoot, 'failure.png'), { force: true });

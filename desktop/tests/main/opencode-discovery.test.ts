@@ -6,7 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { OpenCodeDiscovery } from '../../src/main/opencode-discovery.js';
 import { LocalState } from '../../src/main/local-state.js';
-import { StorageError } from '../../src/core/private-storage.js';
+import { StorageError } from '../../src/core/storage/private-storage.js';
 
 const key = 'opencode-binary';
 class MemoryLocal {

@@ -16,6 +16,7 @@ const artifactRoot = path.join(desktopRoot, 'artifacts', 'opencode-discovery-ui-
 const standardBinary = path.join(homeRoot, '.opencode', 'bin', 'opencode'), pathBinary = path.join(pathRoot, 'opencode');
 const badBinary = path.join(temporaryRoot, 'manual', 'incompatible-opencode');
 const fixtureKey = 'discovery-ui-only-synthetic-key', modelID = 'discovery-ui-fixture-model';
+const providerURL = 'https://discovery-fixture.invalid/v1';
 for (const directory of [homeRoot, pathRoot, previewRoot, privateRoot, artifactRoot]) await mkdir(directory, { recursive: true });
 const sdkURL = pathToFileURL(path.join(desktopRoot, 'node_modules', '@agentclientprotocol', 'sdk', 'dist', 'acp.js')).href;
 const fixtureSource = '#!' + process.execPath + '\n' + 'globalThis.__SCREENDECK_ACP_FIXTURE_SDK_URL = ' + JSON.stringify(sdkURL) + ';\n' + await readFile(path.join(desktopRoot, 'tests', 'fixtures', 'opencode-acp-ui-runtime.mjs'), 'utf8');
@@ -34,21 +35,46 @@ const tools = () => modal().getByRole('region', { name: 'OpenCode 执行器', ex
 const screenshot = async filename => { await page.screenshot({ path: path.join(artifactRoot, filename) }); screenshots.push(filename); };
 const resize = async (width, height) => { await application.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setContentSize(size.width, size.height), { width, height }); await expect.poll(() => page.evaluate(() => [innerWidth, innerHeight])).toEqual([width, height]); };
 const refresh = async () => { await tools().getByTestId('opencode-runtime-refresh').click(); await expect(tools().getByTestId('opencode-runtime-refresh')).toBeEnabled(); };
-const openTools = async () => { await page.getByRole('button', { name: '设置', exact: true }).click(); await modal().getByRole('tab', { name: '编码工具', exact: true }).click(); await expect(tools().getByTestId('opencode-runtime-refresh')).toBeEnabled(); };
-const saveKey = async () => { await modal().getByRole('tab', { name: '模型服务', exact: true }).click(); await modal().getByLabel('API 地址', { exact: true }).fill('https://discovery-fixture.invalid/v1'); await modal().getByLabel('模型名称', { exact: true }).fill(modelID); await modal().getByLabel('API 密钥', { exact: true }).fill(fixtureKey); await modal().getByLabel('记住 API 密钥', { exact: true }).uncheck(); await modal().getByRole('button', { name: '保存连接', exact: true }).click(); await modal().getByRole('tab', { name: '编码工具', exact: true }).click(); };
+const openTools = async () => { await page.getByRole('button', { name: '设置', exact: true }).click(); await modal().getByRole('tab', { name: 'Agent 设置', exact: true }).click(); await expect(tools().getByTestId('opencode-runtime-refresh')).toBeEnabled(); };
+const saveUnverifiedModel = async () => {
+  const before = (await application.evaluate(() => globalThis.__discoveryUICounts)).modelCatalogChecks;
+  await application.evaluate(() => { globalThis.__discoveryUIModelCheckAllowed = true; });
+  try {
+    await modal().getByRole('button', { name: '校验并保存', exact: true }).click();
+    await expect(modal().getByRole('button', { name: '保存（未验证）', exact: true })).toBeEnabled();
+    await expect(modal().getByRole('status').filter({ hasText: '服务不支持模型列表。' })).toBeVisible();
+  } finally { await application.evaluate(() => { globalThis.__discoveryUIModelCheckAllowed = false; }); }
+  await modal().getByRole('button', { name: '保存（未验证）', exact: true }).click();
+  await expect(modal().getByRole('status').filter({ hasText: '连接已保存，模型未验证。' })).toBeVisible();
+  await expect(modal().getByLabel('API 密钥', { exact: true })).toHaveValue('');
+  await expect(modal().getByLabel('API 密钥', { exact: true })).toHaveAttribute('placeholder', '•••••• · 输入新密钥替换');
+  assert.equal((await application.evaluate(() => globalThis.__discoveryUICounts)).modelCatalogChecks, before + 1);
+};
+const saveKey = async () => { await modal().getByRole('tab', { name: '模型服务', exact: true }).click(); await modal().getByLabel('API 地址', { exact: true }).fill(providerURL); await modal().getByLabel('模型', { exact: true }).fill(modelID); await modal().getByLabel('API 密钥', { exact: true }).fill(fixtureKey); await saveUnverifiedModel(); await modal().getByRole('tab', { name: 'Agent 设置', exact: true }).click(); };
 const chooserResult = async filename => application.evaluate(({ dialog }, filename) => { dialog.showOpenDialog = async () => { globalThis.__discoveryUICounts.chooserCalls++; return filename ? { canceled: false, filePaths: [filename] } : { canceled: true, filePaths: [] }; }; }, filename);
 const noProcesses = async () => { for (const value of Object.values(await allRuntimeCounts())) for (const key of ['versionChecks', 'configChecks', 'acpStarts', 'promptSubmissions', 'sessionCreates']) assert.equal(value[key], 0, key + ' must stay zero during metadata reads'); };
 const launch = async () => {
   application = await electron.launch({ args: [desktopRoot], env: launchEnv, timeout: 30_000 });
   application.process().stderr?.on('data', bytes => console.error('[electron] ' + String(bytes).replaceAll(fixtureKey, '[synthetic-key]').slice(0, 4096)));
-  await application.evaluate(({ net, session, dialog, shell }) => {
-    globalThis.__discoveryUICounts = { chooserCalls: 0, installLinks: [], httpAttempts: 0, ordinarySends: 0 };
-    const wrap = original => (input, ...args) => { const url = typeof input === 'string' ? input : input?.url ?? String(input); if (/^https?:/i.test(url)) { globalThis.__discoveryUICounts.httpAttempts++; throw new Error('Discovery GUI fixture blocks HTTP.'); } return original(input, ...args); };
+  await application.evaluate(({ net, session, dialog, shell }, { providerURL, fixtureKey }) => {
+    globalThis.__discoveryUIModelCheckAllowed = false;
+    globalThis.__discoveryUICounts = { chooserCalls: 0, installLinks: [], httpAttempts: 0, ordinarySends: 0, modelCatalogChecks: 0 };
+    const wrap = original => (input, ...args) => {
+      const url = new URL(typeof input === 'string' ? input : input?.url ?? String(input));
+      const method = String(args[0]?.method ?? input?.method ?? 'GET').toUpperCase();
+      const headers = new Headers(args[0]?.headers ?? input?.headers);
+      // Model-directory discovery is outside this executable-discovery regression.
+      if (globalThis.__discoveryUIModelCheckAllowed && url.href === providerURL + '/models' && method === 'GET' && headers.get('authorization') === 'Bearer ' + fixtureKey) {
+        globalThis.__discoveryUICounts.modelCatalogChecks++; return Promise.resolve(new Response('{}', { status: 404, headers: { 'Content-Type': 'application/json' } }));
+      }
+      if (['http:', 'https:'].includes(url.protocol)) { globalThis.__discoveryUICounts.httpAttempts++; throw new Error('Discovery GUI fixture blocks HTTP.'); }
+      return original(input, ...args);
+    };
     globalThis.fetch = wrap(globalThis.fetch.bind(globalThis)); net.fetch = wrap(net.fetch.bind(net));
     session.defaultSession.webRequest.onBeforeRequest({ urls: ['http://*/*', 'https://*/*'] }, (_details, callback) => { globalThis.__discoveryUICounts.httpAttempts++; callback({ cancel: true }); });
     dialog.showOpenDialog = async () => { globalThis.__discoveryUICounts.chooserCalls++; return { canceled: true, filePaths: [] }; };
     shell.openExternal = async url => { globalThis.__discoveryUICounts.installLinks.push(url); };
-  });
+  }, { providerURL, fixtureKey });
   page = await application.firstWindow({ timeout: 30_000 }); page.setDefaultTimeout(15_000);
   await expect(page.getByRole('heading', { name: '今天想推进什么？' })).toBeVisible({ timeout: 30_000 });
   await application.evaluate(({ ipcMain }) => { ipcMain.removeHandler('screendeck:send-message'); ipcMain.handle('screendeck:send-message', () => { globalThis.__discoveryUICounts.ordinarySends++; throw new Error('Discovery GUI never sends ordinary chat.'); }); });
@@ -131,11 +157,11 @@ try {
     assert.equal((await runtimeCounts(pathBinary)).versionChecks, 0); assert.equal(await tools().getByRole('textbox').count(), 0);
   });
   await check('dirty-model-gate-preserves-candidate-without-starting', async () => {
-    await saveKey(); await modal().getByRole('tab', { name: '模型服务', exact: true }).click(); await modal().getByLabel('模型名称', { exact: true }).fill('unsaved-synthetic-model');
-    await modal().getByRole('tab', { name: '编码工具', exact: true }).click(); await expect(tools().getByTestId('opencode-runtime-start')).toBeDisabled();
+    await saveKey(); await modal().getByRole('tab', { name: '模型服务', exact: true }).click(); await modal().getByLabel('模型', { exact: true }).fill('unsaved-synthetic-model');
+    await modal().getByRole('tab', { name: 'Agent 设置', exact: true }).click(); await expect(tools().getByTestId('opencode-runtime-start')).toBeDisabled();
     await expect(tools().getByRole('combobox', { name: 'OpenCode 安装位置', exact: true })).toHaveValue(pathID);
     assert.equal((await runtimeCounts(pathBinary)).versionChecks, 0);
-    await tools().getByRole('button', { name: '回到模型服务', exact: true }).click(); await modal().getByLabel('模型名称', { exact: true }).fill(modelID); await modal().getByRole('button', { name: '保存连接', exact: true }).click(); await modal().getByRole('tab', { name: '编码工具', exact: true }).click();
+    await tools().getByRole('button', { name: '回到模型服务', exact: true }).click(); await modal().getByLabel('模型', { exact: true }).fill(modelID); await saveUnverifiedModel(); await modal().getByRole('tab', { name: 'Agent 设置', exact: true }).click();
   });
   await check('explicit-candidate-id-connects-selected-path-without-fallback', async () => {
     await tools().getByRole('button', { name: '连接 OpenCode', exact: true }).click(); await expect(tools().getByTestId('opencode-runtime-status')).toContainText('已连接 1.19.0', { timeout: 30_000 });
@@ -190,7 +216,7 @@ try {
     for (const value of Object.values(await allRuntimeCounts())) { assert.equal(value.promptSubmissions, 0); assert.equal(value.sessionCreates, 0); assert.equal(value.externalModelRequests, 0); }
     appCounts.push(await application.evaluate(() => globalThis.__discoveryUICounts)); for (const value of appCounts) { assert.equal(value.httpAttempts, 0); assert.equal(value.ordinarySends, 0); }
   });
-  const report = { opencodeDiscoveryUISmoke: 'passed', checks, screenshots, temporaryRoot, runtimeCounts: await allRuntimeCounts(), appCounts, fixture: 'real production IPC with generated Node SDK ACP fixture in standard HOME and controlled PATH', limitations: ['Only temporary generated HOME/PATH/private/preview data are inspected.', 'Native chooser and fixed official guide opening are intercepted inside the isolated Electron process.', 'No real OpenCode, installation, model, or private user credential is used; version/config probes happen only after explicit Connect.', 'Guards begin after Electron launch/initialization and counts cover smoke interactions.'] };
+  const report = { opencodeDiscoveryUISmoke: 'passed', checks, screenshots, temporaryRoot, runtimeCounts: await allRuntimeCounts(), appCounts, fixture: 'real production IPC with generated Node SDK ACP fixture in standard HOME and controlled PATH', limitations: ['Only temporary generated HOME/PATH/private/preview data are inspected.', 'Only the exact synthetic provider models GET with its synthetic Bearer key is fulfilled locally with HTTP 404; model discovery is outside this executable-discovery regression.', 'Native chooser and fixed official guide opening are intercepted inside the isolated Electron process.', 'No real OpenCode, installation, model, or private user credential is used; version/config probes happen only after explicit Connect.', 'Guards begin after Electron launch/initialization and counts cover smoke interactions.'] };
   await rm(path.join(artifactRoot, 'failure.json'), { force: true }); await rm(path.join(artifactRoot, 'failure.png'), { force: true }); await writeFile(path.join(artifactRoot, 'report.json'), JSON.stringify(report, null, 2) + '\n'); console.log(JSON.stringify(report));
 } catch (error) {
   if (page) try { await screenshot('failure.png'); } catch { /* retain original error */ }

@@ -10,6 +10,7 @@ palette:
   action: '#202020'
   on_action: '#FCFCFC'
   selection: '#EAEAEA'
+  search_backdrop: transparent
   deck_page: '#101010'
   deck_content: '#171717'
   deck_text: '#F2F2F2'
@@ -19,23 +20,49 @@ type:
   base: 13px
   heading: 19px
   welcome: 27px
+credentials:
+  persistence: default-private-plaintext-json-file
+  key_display: masked-presence-with-explicit-replacement
+  validation: explicit-model-list-query
+  model_selection: saved-catalog-with-manual-unverified-fallback
+  renderer: presence-and-storage-status-only
+  legacy_encrypted_file: preserved-without-reading-or-migration
 layout:
-  shell: three-full-height-columns
-  headers: independent-aligned
-  topbar: 48px
+  shell: three-soft-separated-columns
+  headers: continuous-chat-surface-and-aligned-context-body
+  topbar: 56px
+  surface_inset: 8px
+  column_gap: 8px
+  surface_radius: 16px
+  inset_header_height: 48px
   sidebar: 224px
   sidebar_macos: 252px
   detail: clamp(332px, 29vw, 464px)
+  search_initial: top-centered-input-only
+  search_top: 80px
+  search_narrow_top: 64px
+  search_results: expand-below-input-with-bounded-scroll
   composer_max: 780px
+  chat_content_max: 780px
+  chat_gutter: 28px
+  chat_narrow_gutter: 18px
+  composer_radius: 16px
+  composer_controls: text-source-dropdown-and-model-entry-32px
+  composer_coarse_pointer_controls: 44px
+  composer_labels: visible-value-and-complete-tooltip
+  composer_expanded_max: min(360px, 40dvh)
   narrow_detail: modal-drawer-with-background-inert
   narrow_detail_max_width: 960px
   narrow_sidebar_macos: 112px
   deck_native_controls_clearance: 60px
 brand:
-  logo: two-separate-true-semicircles
-  lobe: 11x22px
-  gap: 2px
-  geometry: flat-edges-outward-curved-edges-facing
+  logo: official-fold-mark
+  source: assets/brand/screendeck-mark-black.svg
+  treatment: current-color-mask
+  workbench_size: 24x28px
+  deck_size: 19x22px
+  app_icon: assets/brand/screendeck-icon-black.png
+  app_icon_vector: assets/brand/screendeck-icon-black.svg
 rules:
   - no-default-sample-data
   - native-window-traffic-lights
@@ -45,8 +72,16 @@ rules:
   - requested-and-observed-model-separated
   - no-raw-html-or-remote-message-images
   - settings-focus-trap-and-background-inert
+  - quick-chat-search-modal-preserves-workspace
+  - recent-chat-heading-shares-new-chat-action
   - ime-enter-does-not-submit
+  - no-persistent-keyboard-or-success-hints-in-composer
+  - model-entry-opens-existing-settings-without-fake-catalog
   - resident-send-stop-slot
+  - message-and-composer-share-content-column
+  - composer-editor-above-source-model-actions
+  - quote-appends-draft-without-submission
+  - unchanged-message-body-preserves-code-scroll-and-focus
   - busy-and-stop-bound-to-visible-session
   - overview-goal-process-decision-output
   - compact-materials-two-before-disclosure

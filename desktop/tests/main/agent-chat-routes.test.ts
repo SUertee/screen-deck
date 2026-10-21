@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { installAgentChatRoutes } from '../../src/main/agent-chat-routes.js';
-import type { SessionManager } from '../../src/core/session-manager.js';
+import type { SessionManager } from '../../src/core/sessions/session-manager.js';
 import type { ProjectWorkspaceReader } from '../../src/projects/index.js';
 import type { AgentChatSourceInfo } from '../../src/shared/agent-chat.js';
 

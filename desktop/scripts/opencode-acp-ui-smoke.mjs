@@ -16,6 +16,7 @@ const launchHome = path.join(temporaryRoot, 'home');
 const binaryPath = path.join(fixtureRoot, 'node-acp-fixture.mjs');
 const projectID = `project-${randomUUID()}`, timestamp = '2026-10-13T00:00:00.000Z';
 const fixtureKey = 'gui-only-fixture-key', modelID = 'gui-fixture-model';
+const providerURL = 'https://fixture.example/v1';
 const identity = { schema_version: 2, kind: 'project', project_id: projectID, name: 'ACP GUI 隔离项目', created_at: timestamp };
 const task = { schema_version: 1, kind: 'task', project_id: projectID, task_id: 'task-001', title: '验证无工具讨论授权', goal: '合成 GUI 验收任务，不读取私人数据、不调用真实模型。', status: 'draft', plan_version: 1, assignee: 'human', created_at: timestamp, updated_at: timestamp, run_ids: [], acceptance: [{ id: 'preserve-source', description: '保留源任务与普通聊天', verification: 'not_checked', requires_human: true }], references: [] };
 const tasks = [task, ...['验证 ACP 显式失败', '验证 ACP 取消终结', '验证 ACP 断连未知', '读取旧 HTTP 执行记录', '验证 ACP RPC 错误脱敏'].map((title, index) => ({ ...task, task_id: 'task-00' + (index + 2), title }))];
@@ -60,6 +61,20 @@ const publicStatus = async () => {
   assert.deepEqual(Object.keys(status).sort(), status.state === 'ready' ? ['model', 'requiresRestart', 'state', 'version'] : ['state']);
   assert.equal(JSON.stringify(status).includes(fixtureKey), false); return status;
 };
+const saveUnverifiedModel = async modal => {
+  const before = (await application.evaluate(() => globalThis.__opencodeAcpUICounts)).modelCatalogChecks;
+  await application.evaluate(() => { globalThis.__opencodeAcpUIModelCheckAllowed = true; });
+  try {
+    await modal.getByRole('button', { name: '校验并保存', exact: true }).click();
+    await expect(modal.getByRole('button', { name: '保存（未验证）', exact: true })).toBeEnabled();
+    await expect(modal.getByRole('status').filter({ hasText: '服务不支持模型列表。' })).toBeVisible();
+  } finally { await application.evaluate(() => { globalThis.__opencodeAcpUIModelCheckAllowed = false; }); }
+  await modal.getByRole('button', { name: '保存（未验证）', exact: true }).click();
+  await expect(modal.getByRole('status').filter({ hasText: '连接已保存，模型未验证。' })).toBeVisible();
+  await expect(modal.getByLabel('API 密钥', { exact: true })).toHaveValue('');
+  await expect(modal.getByLabel('API 密钥', { exact: true })).toHaveAttribute('placeholder', '•••••• · 输入新密钥替换');
+  assert.equal((await application.evaluate(() => globalThis.__opencodeAcpUICounts)).modelCatalogChecks, before + 1);
+};
 const thread = () => page.locator('.task-execution-history');
 const turnRef = record => ({ session: { format: 'task-v2', sessionID: record.conversation_id }, turnID: record.turns[0].turn_id });
 const stateOf = reference => page.evaluate(async value => (await window.screendeck.loadTaskSession(value.session)).turns.find(item => item.turn_id === value.turnID), reference);
@@ -99,10 +114,17 @@ const assertNoPublicSecrets = async () => {
   assert.equal((await page.locator('body').innerText()).includes(fixtureKey), false, 'rendered errors must be sanitized');
 };
 
-const installGuards = async instance => { await instance.evaluate(({ net, session, dialog, ipcMain }, binaryPath) => {
-    globalThis.__opencodeAcpUICounts = { chooserCalls: 0, remoteAttempts: 0, localRequests: 0, ordinarySends: 0 };
+const installGuards = async instance => { await instance.evaluate(({ net, session, dialog, ipcMain }, { binaryPath, providerURL, fixtureKey }) => {
+    globalThis.__opencodeAcpUIModelCheckAllowed = false;
+    globalThis.__opencodeAcpUICounts = { chooserCalls: 0, remoteAttempts: 0, localRequests: 0, ordinarySends: 0, modelCatalogChecks: 0 };
     const wrap = original => (input, ...args) => {
       const url = new URL(typeof input === 'string' ? input : input?.url ?? String(input));
+      const method = String(args[0]?.method ?? input?.method ?? 'GET').toUpperCase();
+      const headers = new Headers(args[0]?.headers ?? input?.headers);
+      // Model-directory discovery is outside this ACP regression; no request leaves the process.
+      if (globalThis.__opencodeAcpUIModelCheckAllowed && url.href === providerURL + '/models' && method === 'GET' && headers.get('authorization') === 'Bearer ' + fixtureKey) {
+        globalThis.__opencodeAcpUICounts.modelCatalogChecks++; return Promise.resolve(new Response('{}', { status: 404, headers: { 'Content-Type': 'application/json' } }));
+      }
       if (['http:', 'https:'].includes(url.protocol)) {
         if (url.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)) { globalThis.__opencodeAcpUICounts.remoteAttempts++; throw new Error('GUI fixture blocks external requests.'); }
         globalThis.__opencodeAcpUICounts.localRequests++; throw new Error('ACP stdio fixture forbids HTTP.');
@@ -115,7 +137,7 @@ const installGuards = async instance => { await instance.evaluate(({ net, sessio
     // A click on ordinary Send would be a test failure, never a provider call.
     const install = () => { ipcMain.removeHandler('screendeck:send-message'); ipcMain.handle('screendeck:send-message', () => { globalThis.__opencodeAcpUICounts.ordinarySends++; throw new Error('GUI smoke never submits ordinary chat.'); }); };
     globalThis.__installOpenCodeUISendGuard = install;
-  }, binaryPath); };
+  }, { binaryPath, providerURL, fixtureKey }); };
 
 try {
   application = await electron.launch({ args: [desktopRoot], env: launchEnv, timeout: 30_000 });
@@ -141,15 +163,14 @@ try {
     await page.getByRole('button', { name: '设置', exact: true }).click();
     const modal = page.getByRole('dialog', { name: '设置', exact: true });
     await expect(modal).toBeVisible();
-    await modal.getByRole('tab', { name: '编码工具', exact: true }).click();
+    await modal.getByRole('tab', { name: 'Agent 设置', exact: true }).click();
     await expect(modal.getByRole('region', { name: 'OpenCode 执行器' }).getByText('未启动', { exact: true })).toBeVisible();
     await modal.getByRole('tab', { name: '模型服务', exact: true }).click();
-    await modal.getByLabel('API 地址', { exact: true }).fill('https://fixture.example/v1');
-    await modal.getByLabel('模型名称', { exact: true }).fill(modelID);
+    await modal.getByLabel('API 地址', { exact: true }).fill(providerURL);
+    await modal.getByLabel('模型', { exact: true }).fill(modelID);
     await modal.getByLabel('API 密钥', { exact: true }).fill(fixtureKey);
-    await modal.getByLabel('记住 API 密钥', { exact: true }).uncheck();
-    await modal.getByRole('button', { name: '保存连接', exact: true }).click();
-    await modal.getByRole('tab', { name: '编码工具', exact: true }).click();
+    await saveUnverifiedModel(modal);
+    await modal.getByRole('tab', { name: 'Agent 设置', exact: true }).click();
     await modal.getByTestId('opencode-binary-choose').click();
     await expect(modal.getByTestId('opencode-runtime-start')).toBeEnabled();
     const metadata = await runtimeCounts();
@@ -158,7 +179,7 @@ try {
     await modal.getByTestId('opencode-runtime-start').click();
     await expect(modal.getByTestId('opencode-runtime-status')).toContainText('已连接 1.19.0', { timeout: 30_000 });
     await expect(modal.getByTestId('opencode-runtime-status')).toContainText(modelID);
-    await expect(modal.getByRole('tabpanel', { name: '编码工具', exact: true })).toContainText('ACP v1');
+    await expect(modal.getByRole('tabpanel', { name: 'Agent 设置', exact: true })).toContainText('ACP v1');
     assert.deepEqual(await publicStatus(), { state: 'ready', version: '1.19.0', model: { provider_id: 'screendeck', model_id: modelID }, requiresRestart: false });
     const counts = await runtimeCounts();
     assert.equal(counts.controls.independentHome, true); assert.equal(counts.controls.independentXDG, true);
@@ -247,7 +268,7 @@ try {
     await resize(1440, 940);
     await page.getByRole('button', { name: '设置', exact: true }).click();
     const modal = page.getByRole('dialog', { name: '设置', exact: true });
-    await modal.getByRole('tab', { name: '编码工具', exact: true }).click();
+    await modal.getByRole('tab', { name: 'Agent 设置', exact: true }).click();
     await modal.getByRole('button', { name: '关闭执行器', exact: true }).click();
     await expect(modal.getByRole('region', { name: 'OpenCode 执行器' }).getByText('未启动', { exact: true })).toBeVisible();
     assert.deepEqual(await publicStatus(), { state: 'stopped' });
@@ -369,7 +390,7 @@ try {
     for (const value of [beforeRestartCounts, current]) { assert.equal(value.remoteAttempts, 0); assert.equal(value.localRequests, 0); assert.equal(value.ordinarySends, 0); }
     assert.equal(current.chooserCalls, 0);
   });
-  const report = { opencodeAcpUISmoke: 'passed', fixture: 'generated Node SDK 1.8 ACP v1 agent; production-default main/preload/renderer', checks, screenshots, runtimeCounts: await runtimeCounts(), appCounts: { beforeRestart: beforeRestartCounts, afterRestart: await application.evaluate(() => globalThis.__opencodeAcpUICounts) }, temporaryRoot, guardScope: 'Guards begin after Electron launch; ordinary-send guard begins after initialization. Counts cover smoke interactions, not prelaunch/bootstrap.', limitations: ['Official stable ACP v1 SDK agent fixture; not an official OpenCode binary, model, tools, or OS sandbox test.', 'All tasks, history, ordinary chat, plan and credential were generated in temporary directories.', 'The native chooser is stubbed only inside this isolated Electron process; public runtime status contains no connection secrets.'] };
+  const report = { opencodeAcpUISmoke: 'passed', fixture: 'generated Node SDK 1.8 ACP v1 agent; production-default main/preload/renderer', checks, screenshots, runtimeCounts: await runtimeCounts(), appCounts: { beforeRestart: beforeRestartCounts, afterRestart: await application.evaluate(() => globalThis.__opencodeAcpUICounts) }, temporaryRoot, guardScope: 'Guards begin after Electron launch; ordinary-send guard begins after initialization. Counts cover smoke interactions, not prelaunch/bootstrap.', limitations: ['Official stable ACP v1 SDK agent fixture; not an official OpenCode binary, model, tools, or OS sandbox test.', 'Only the exact synthetic provider models GET with its synthetic Bearer key is fulfilled locally with HTTP 404; model discovery is outside this ACP regression.', 'All tasks, history, ordinary chat, plan and credential were generated in temporary directories.', 'The native chooser is stubbed only inside this isolated Electron process; public runtime status contains no connection secrets.'] };
   await rm(path.join(artifactRoot, 'failure.json'), { force: true }); await rm(path.join(artifactRoot, 'failure.png'), { force: true });
   await writeFile(path.join(artifactRoot, 'report.json'), JSON.stringify(report, null, 2) + '\n'); console.log(JSON.stringify(report));
 } catch (error) {

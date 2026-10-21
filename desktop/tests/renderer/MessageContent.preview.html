@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>消息复制组件 · 状态预览</title>
+  <link rel="stylesheet" href="../../src/renderer/styles.css" />
+  <link rel="stylesheet" href="../../src/renderer/message-content.css" />
+  <style>
+    html, body { height: auto; min-height: 100%; overflow: auto; }
+    main { width: min(760px, 100%); padding: 24px; margin: 0 auto; }
+    h1 { font-size: 18px; }
+    .preview-note { color: var(--ink-2); font-size: 12px; line-height: 1.7; }
+    .preview-states { display: grid; gap: 8px; margin: 20px 0 28px; }
+    .preview-row { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 12px; align-items: center; }
+    .preview-row > span { color: var(--ink-2); font: 11px/1.5 var(--mono); }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>消息复制 · 八种状态</h1>
+    <p class="preview-note">独立样式预览，不进入应用。按钮状态固定展示，不调用剪贴板或模型；真实复制、失败重试和 Markdown 安全边界由隔离界面测试核对。</p>
+    <div class="preview-states">
+      <div class="preview-row"><span>default</span><div><button class="copy-button" type="button" data-copy-state="default"><span aria-hidden="true">⧉</span><span>复制消息</span></button></div></div>
+      <div class="preview-row"><span>hover</span><div><button class="copy-button is-hover" type="button" data-copy-state="default"><span aria-hidden="true">⧉</span><span>复制消息</span></button></div></div>
+      <div class="preview-row"><span>focus-visible</span><div><button class="copy-button is-focus" type="button" data-copy-state="default"><span aria-hidden="true">⧉</span><span>复制消息</span></button></div></div>
+      <div class="preview-row"><span>active</span><div><button class="copy-button is-active" type="button" data-copy-state="default"><span aria-hidden="true">⧉</span><span>复制消息</span></button></div></div>
+      <div class="preview-row"><span>disabled</span><div><button class="copy-button" type="button" data-copy-state="disabled" disabled><span aria-hidden="true">⧉</span><span>复制消息</span></button></div></div>
+      <div class="preview-row"><span>loading</span><div><button class="copy-button" type="button" data-copy-state="loading" aria-busy="true" disabled><span class="copy-button-icon" aria-hidden="true">◌</span><span>复制中…</span></button></div></div>
+      <div class="preview-row"><span>error</span><div><button class="copy-button" type="button" data-copy-state="error" title="复制失败，请点击重试。"><span aria-hidden="true">!</span><span>重试复制</span></button></div></div>
+      <div class="preview-row"><span>success</span><div><button class="copy-button" type="button" data-copy-state="success"><span aria-hidden="true">✓</span><span>已复制</span></button></div></div>
+    </div>
+    <div class="markdown">
+      <section class="markdown-code-block">
+        <header class="markdown-code-header"><span class="markdown-code-language">typescript</span><button class="copy-button" type="button" data-copy-state="default"><span aria-hidden="true">⧉</span><span>复制代码</span></button></header>
+        <pre class="markdown-code-pre" tabindex="0" aria-label="typescript 代码"><code>  const message = "保留缩进与原文，不从展示 DOM 截取";
+  console.log(message, "这是一行用于检查窄窗横向滚动的完整代码，不折行、不截断，也不会触发真实工具执行。");
+
+</code></pre>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

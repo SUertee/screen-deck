@@ -4,7 +4,7 @@ import { access, lstat, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import type { OpenCodeBinaryCandidate, OpenCodeInstallation } from '../shared/desktop-api.js';
-import { StorageError } from '../core/private-storage.js';
+import { StorageError } from '../core/storage/private-storage.js';
 import type { LocalState } from './local-state.js';
 
 export interface OpenCodeDiscoveryOptions {

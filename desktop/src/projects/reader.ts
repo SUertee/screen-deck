@@ -17,7 +17,7 @@ const emptyResult = (): ProjectWorkspaceResult => ({ status: 'error', project: n
 const issue = (code: string, location: string, message: string) => new ProjectReadFailure(code, location, message);
 const diagnostic = (error: unknown): ProjectDiagnostic => error instanceof ProjectReadFailure
   ? { code: error.code, severity: 'error', path: error.location, message: error.message }
-  : { code: isMissing(error) ? 'missing_source' : 'read_failed', severity: 'error', path: '项目来源', message: isMissing(error) ? '项目身份或必需的记录目录不存在；未导入或修改任何来源文件。' : '项目来源无法读取；未导入或修改任何来源文件。' };
+  : { code: isMissing(error) ? 'missing_source' : 'read_failed', severity: 'error', path: '项目来源', message: isMissing(error) ? '项目记录暂时无法读取，请重新选择项目。' : '项目来源无法读取；未导入或修改任何来源文件。' };
 
 function resolveReference(reference: RecordReference, projectID: string): ResolvedReference {
   if (reference.path.startsWith('screendeck:')) {

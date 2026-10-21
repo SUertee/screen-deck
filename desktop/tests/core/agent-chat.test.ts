@@ -7,16 +7,16 @@ import test from 'node:test';
 import type { AgentChatReadySource, AgentSessionRecord } from '../../src/shared/agent-chat.js';
 import type { SessionRecord } from '../../src/shared/types.js';
 import type { TaskSessionRecord } from '../../src/shared/task-execution.js';
-import type { AgentChatDriver, AgentChatExecutionEvent, AgentChatLookup, AgentChatRequest } from '../../src/core/agent-chat-driver.js';
-import { AgentSessionHistoryStore, type AgentSessionHistoryStoring } from '../../src/core/agent-session-history-store.js';
-import { AgentSessionLifecycle } from '../../src/core/agent-session-lifecycle.js';
-import { validateAgentSession } from '../../src/core/agent-session-schema.js';
-import { ExecutionError } from '../../src/core/execution-driver.js';
-import { StorageError } from '../../src/core/private-storage.js';
-import { SessionHistoryStore } from '../../src/core/session-history-store.js';
-import { SessionManager } from '../../src/core/session-manager.js';
-import { TaskSessionHistoryStore } from '../../src/core/task-session-history-store.js';
-import { FakeTaskExecutionDriver } from '../../src/core/fake-task-execution-driver.js';
+import type { AgentChatDriver, AgentChatExecutionEvent, AgentChatLookup, AgentChatRequest } from '../../src/core/sessions/agent-chat-driver.js';
+import { AgentSessionHistoryStore, type AgentSessionHistoryStoring } from '../../src/core/sessions/agent-session-history-store.js';
+import { AgentSessionLifecycle } from '../../src/core/sessions/agent-session-lifecycle.js';
+import { validateAgentSession } from '../../src/core/sessions/agent-session-schema.js';
+import { ExecutionError } from '../../src/core/sessions/execution-driver.js';
+import { StorageError } from '../../src/core/storage/private-storage.js';
+import { SessionHistoryStore } from '../../src/core/sessions/session-history-store.js';
+import { SessionManager } from '../../src/core/sessions/session-manager.js';
+import { TaskSessionHistoryStore } from '../../src/core/sessions/task-session-history-store.js';
+import { TaskDriverFixture } from '../helpers/task-driver-fixture.js';
 
 const date = '2026-10-14T00:00:00.000Z';
 const source = (): AgentChatReadySource => ({ agentID: 'opencode', name: 'OpenCode', state: 'ready', configDigest: 'a'.repeat(64), runtimeID: randomUUID(), connectionGeneration: randomUUID(), model: { provider_id: 'fixture', model_id: 'fixture-model' } });
@@ -351,7 +351,7 @@ test('Cross-format chat/task conflicts refuse Agent reads and preserve all origi
     assert.equal((await store.list()).records.length, 0);
     await assert.rejects(store.save({ ...agent, title: 'must not write' }, agent.revision), /不同格式/);
     assert.deepEqual(await readFile(agentFile), agentBytes);
-    const manager = new SessionManager({ store: new SessionHistoryStore(join(root, 'sessions')), driver: { capabilities: { chat: true, tools: false, remoteSessions: false, remoteAbort: false }, async execute() { throw new Error('must not send'); } }, agent: { store, driver: new AgentFixture() }, task: { store: new TaskSessionHistoryStore(root), driver: new FakeTaskExecutionDriver() } });
+    const manager = new SessionManager({ store: new SessionHistoryStore(join(root, 'sessions')), driver: { capabilities: { chat: true, tools: false, remoteSessions: false, remoteAbort: false }, async execute() { throw new Error('must not send'); } }, agent: { store, driver: new AgentFixture() }, task: { store: new TaskSessionHistoryStore(root), driver: new TaskDriverFixture() } });
     if (format === 'chat') await assert.rejects(manager.loadSession(record.conversation_id), /不同格式/);
     else {
       const listing = await manager.listTaskSessions();

@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import { agent, client, type AgentConnection, type PromptResponse, type SessionConfigOption, type SessionNotification } from '@agentclientprotocol/sdk';
-import { OpenCodeAcpAdapter } from '../../src/main/opencode-acp-adapter.js';
-import { ExecutionError } from '../../src/core/execution-driver.js';
-import type { OpenCodeAcpConnection, OpenCodeAcpEvent } from '../../src/main/opencode-acp-connection.js';
+import { OpenCodeAcpAdapter } from '../../src/core/agents/opencode/opencode-acp-adapter.js';
+import { ExecutionError } from '../../src/core/sessions/execution-driver.js';
+import type { OpenCodeAcpConnection, OpenCodeAcpEvent } from '../../src/core/agents/opencode/opencode-acp-connection.js';
 import type { ExecutionLookup, ExternalExecutionBinding, TaskEventEnvelope, TaskExecutionRequest } from '../../src/shared/task-execution.js';
 
 const model = { provider_id: 'screendeck', model_id: 'fixture-model' };

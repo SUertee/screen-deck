@@ -3,8 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { createServer, type ServerResponse } from 'node:http';
 import test from 'node:test';
-import { ExecutionError } from '../../src/core/execution-driver.js';
-import { OpenCodeAdapter, type OpenCodeConnection } from '../../src/core/opencode-adapter.js';
+import { ExecutionError } from '../../src/core/sessions/execution-driver.js';
+import { OpenCodeAdapter, type OpenCodeConnection } from '../../src/core/agents/opencode/opencode-adapter.js';
 import type { ExecutionLookup, ExternalExecutionBinding, TaskEventEnvelope, TaskExecutionRequest } from '../../src/shared/task-execution.js';
 
 const model = { provider_id: 'screendeck', model_id: 'fixture-model' };

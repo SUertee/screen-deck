@@ -7,9 +7,9 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { Readable, Writable } from 'node:stream';
 import { client, ndJsonStream, RequestError, type ClientConnection, type SessionNotification, type RequestPermissionRequest, type AnyMessage } from '@agentclientprotocol/sdk';
-import type { OpenCodeConnection } from '../core/opencode-adapter.js';
-import type { OpenCodeAcpConnection, OpenCodeAcpEvent } from './opencode-acp-connection.js';
-export type { OpenCodeConnection } from '../core/opencode-adapter.js';
+import type { OpenCodeConnection } from '../core/agents/opencode/opencode-adapter.js';
+import type { OpenCodeAcpConnection, OpenCodeAcpEvent } from '../core/agents/opencode/opencode-acp-connection.js';
+export type { OpenCodeConnection } from '../core/agents/opencode/opencode-adapter.js';
 
 export const OPENCODE_VERSION = '1.19.0';
 const PROVIDER_ID = 'screendeck';

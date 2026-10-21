@@ -4,22 +4,22 @@ import { mkdir, mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { SessionManager } from '../../src/core/session-manager.js';
-import { SessionHistoryStore } from '../../src/core/session-history-store.js';
-import { TaskSessionHistoryStore } from '../../src/core/task-session-history-store.js';
-import { TaskOrchestrator } from '../../src/core/task-orchestrator.js';
-import { FakeTaskExecutionDriver } from '../../src/core/fake-task-execution-driver.js';
-import { ApprovalService } from '../../src/core/approval-service.js';
+import { SessionManager } from '../../src/core/sessions/session-manager.js';
+import { SessionHistoryStore } from '../../src/core/sessions/session-history-store.js';
+import { TaskSessionHistoryStore } from '../../src/core/sessions/task-session-history-store.js';
+import { TaskOrchestrator } from '../../src/core/tasks/task-orchestrator.js';
+import { ApprovalService } from '../../src/core/approvals/approval-service.js';
 import { installTaskExecutionRoutes, type TaskDriverRegistration } from '../../src/main/task-execution-routes.js';
-import { ExecutionError } from '../../src/core/execution-driver.js';
-import type { TaskExecutionDriver } from '../../src/core/task-execution-driver.js';
-import { StorageError } from '../../src/core/private-storage.js';
-import { canonicalDigest } from '../../src/core/execution-records.js';
-import { taskResultDigest } from '../../src/core/task-session-schema.js';
+import { ExecutionError } from '../../src/core/sessions/execution-driver.js';
+import type { TaskExecutionDriver } from '../../src/core/sessions/task-execution-driver.js';
+import { StorageError } from '../../src/core/storage/private-storage.js';
+import { canonicalDigest } from '../../src/core/storage/execution-records.js';
+import { ExecutionAcceptanceStore } from '../../src/core/tasks/execution-acceptance-store.js';
+import { taskResultDigest, taskSpecDigest } from '../../src/core/sessions/task-session-schema.js';
 import type { ElectronHost } from '../../src/main/electron-host.js';
 import type { ProjectWorkspaceReader } from '../../src/projects/reader.js';
 import type { ProjectWorkspaceResult } from '../../src/projects/types.js';
-import type { AuthorizationInput, DriverRef, ExecutionLookup, ExecutionResult, ExternalExecutionBinding, ExternalObservation, PreparedAuthorization, TaskEventEnvelope, TaskExecutionOptions, TaskExecutionRequest, TaskSessionEvent, TaskSessionRecord, TaskTurnRef } from '../../src/shared/task-execution.js';
+import type { AuthorizationInput, DriverRef, ExecutionLookup, ExecutionResult, ExternalExecutionBinding, ExternalObservation, ExecutionSpec, PreparedAuthorization, TaskEventEnvelope, TaskExecutionOptions, TaskExecutionRequest, TaskSessionEvent, TaskSessionRecord, TaskTurnRecord, TaskTurnRef } from '../../src/shared/task-execution.js';
 import type { ModelSelection } from '../../src/shared/types.js';
 
 /** Protocol fixture only: no runtime process, HTTP, provider settings, files or tools. */
@@ -30,6 +30,7 @@ class ExternalFixtureDriver implements TaskExecutionDriver {
   readonly requests: TaskExecutionRequest[] = [];
   inspections = 0;
   loseReceipt = false;
+  unverifiable = false;
   requestTool = false;
   result: ExecutionResult = { summary: 'External fixture text response.', artifacts: [], evidence: [] };
   private readonly attempts = new Map<string, { binding: ExternalExecutionBinding; model: ModelSelection; finished: boolean }>();
@@ -52,7 +53,7 @@ class ExternalFixtureDriver implements TaskExecutionDriver {
   async inspectExecution(lookup: ExecutionLookup): Promise<ExternalObservation> {
     this.inspections++;
     const attempt = this.attempts.get(lookup.clientRequestID);
-    if (!attempt || canonicalDigest(attempt.binding) !== canonicalDigest(lookup.binding)) return { status: 'unverifiable', reason: 'Original fixture binding missing.' };
+    if (this.unverifiable || !attempt || canonicalDigest(attempt.binding) !== canonicalDigest(lookup.binding)) return { status: 'unverifiable', reason: 'Original fixture binding missing.' };
     const base = { binding: structuredClone(attempt.binding), observedModel: attempt.model, output: this.result.summary, permissionReceipts: [] };
     return attempt.finished ? { ...base, status: 'finished', result: structuredClone(this.result) } : { ...base, status: 'running' };
   }
@@ -74,7 +75,7 @@ function externalRegistration() {
   return { state, registration, verified: () => verified };
 }
 
-async function harness(configuration: { driver?: ExternalFixtureDriver; execution?: TaskDriverRegistration } = {}) {
+async function harness(configuration: { driver?: ExternalFixtureDriver; execution?: TaskDriverRegistration | null } = {}) {
   const root = await mkdtemp(join(await realpath(tmpdir()), 'screendeck-task-ipc-test-'));
   const projectRoot = join(root, 'project'); const previewRoot = join(root, 'preview');
   const projectID = `project-${randomUUID()}`; const taskID = 'task-001';
@@ -83,10 +84,11 @@ async function harness(configuration: { driver?: ExternalFixtureDriver; executio
   await writeFile(join(projectRoot, '.screendeck', 'project.json'), identity);
   const source: ProjectWorkspaceResult = {
     status: 'ready', project: { schema_version: 2, kind: 'project', project_id: projectID, name: 'Fixture', created_at: '2026-10-12T00:00:00.000Z', root_path: projectRoot, history_bound: true, readonly: true },
-    tasks: [{ schema_version: 1, kind: 'task', project_id: projectID, task_id: taskID, title: 'Fixture task', goal: 'Simulated execution only', status: 'draft', plan_version: 1, assignee: 'human', created_at: '2026-10-12T00:00:00.000Z', updated_at: '2026-10-12T00:00:00.000Z', run_ids: [], acceptance: [], references: [], historical: true, is_live: false }],
+    tasks: [{ schema_version: 1, kind: 'task', project_id: projectID, task_id: taskID, title: 'Fixture task', goal: 'Synthetic text execution only', status: 'draft', plan_version: 1, assignee: 'human', created_at: '2026-10-12T00:00:00.000Z', updated_at: '2026-10-12T00:00:00.000Z', run_ids: [], acceptance: [], references: [], historical: true, is_live: false }],
     runs: [], artifact_refs: [], diagnostics: [], loaded_at: '2026-10-12T00:00:00.000Z', historical: true,
   };
-  const driver = configuration.driver ?? new FakeTaskExecutionDriver({ stepDelayMs: 5 });
+  const driver = configuration.driver ?? new ExternalFixtureDriver();
+  const execution = configuration.execution === null ? undefined : configuration.execution ?? externalRegistration().registration;
   const approvals = new ApprovalService(previewRoot);
   let ordinaryCalls = 0;
   const taskStore = new TaskSessionHistoryStore(previewRoot);
@@ -95,23 +97,81 @@ async function harness(configuration: { driver?: ExternalFixtureDriver; executio
   const handlers = new Map<string, (input: unknown) => unknown>(); const events: TaskSessionEvent[] = [];
   const host = { handle: (name: string, operation: (input: unknown) => unknown) => handlers.set(name, operation), broadcastTask: (event: TaskSessionEvent) => events.push(event) } as unknown as ElectronHost;
   const projects = { get: (id: string) => id === projectID ? structuredClone(source) : null, preview: () => { throw new Error('Fixture has no selected material.'); } } as unknown as ProjectWorkspaceReader;
-  installTaskExecutionRoutes({ manager, plans, host, projects, previewRoot, approvals, ...(configuration.execution ? { execution: configuration.execution } : {}) });
+  installTaskExecutionRoutes({ manager, plans, host, projects, previewRoot, approvals, ...(execution ? { execution } : {}) });
   async function invoke<T>(channel: string, input: unknown): Promise<T> {
     const result = await handlers.get(channel)!(input) as { ok: true; value: T } | { ok: false; error: { code: string; message: string } };
     if (!result.ok) throw Object.assign(new Error(result.error.message), { code: result.error.code });
     return result.value;
   }
-  const options = await invoke<TaskExecutionOptions>('task-execution-options', { projectID, taskID });
+  const workspaceHash = canonicalDigest([projectID, projectRoot]);
+  const options: TaskExecutionOptions = execution ? await invoke('task-execution-options', { projectID, taskID }) : { workspace: { workspaceID: `${workspaceHash.slice(0, 8)}-${workspaceHash.slice(8, 12)}-${workspaceHash.slice(12, 16)}-${workspaceHash.slice(16, 20)}-${workspaceHash.slice(20, 32)}`, bindingDigest: '0'.repeat(64) }, drivers: [], model: { provider_id: 'fixture-provider', model_id: 'fixture-model' } };
   const session = await invoke<TaskSessionRecord>('create-task-session', { title: 'Task chat', projectID, taskID });
   const itemID = randomUUID();
-  const plan = await plans.createPlan('Execution fixture', [{ id: itemID, title: configuration.execution ? 'Review the explicit input' : 'Simulate work', kind: 'implementation', assignee: 'unassigned', expected_result: configuration.execution ? 'A text response for separate human review' : 'An explicitly simulated result', dependencies: [], status: 'planned' }], { project_id: projectID, task_id: taskID });
-  const input = (extra: Partial<AuthorizationInput> = {}): AuthorizationInput => ({ planID: plan.id, expectedPlanVersion: plan.version, workItemID: itemID, session: { format: 'task-v2', sessionID: session.conversation_id }, clientRequestID: randomUUID(), text: 'Only this explicitly selected input.', materialIDs: [], workspaceID: options.workspace.workspaceID, driverID: configuration.execution ? 'opencode-no-tools' : 'simulation-success', model: options.model, tools: { kind: 'none' }, ...extra });
+  const plan = await plans.createPlan('Execution fixture', [{ id: itemID, title: 'Review the explicit input', kind: 'implementation', assignee: 'unassigned', expected_result: 'A text response for separate human review', dependencies: [], status: 'planned' }], { project_id: projectID, task_id: taskID });
+  const input = (extra: Partial<AuthorizationInput> = {}): AuthorizationInput => ({ planID: plan.id, expectedPlanVersion: plan.version, workItemID: itemID, session: { format: 'task-v2', sessionID: session.conversation_id }, clientRequestID: randomUUID(), text: 'Only this explicitly selected input.', materialIDs: [], workspaceID: options.workspace.workspaceID, driverID: 'opencode-no-tools', model: options.model, tools: { kind: 'none' }, ...extra });
   const waitState = async (ref: TaskTurnRef, states: string[]) => {
     for (let count = 0; count < 150; count++) { const turn = await manager.getTaskTurn(ref); if (states.includes(turn.state)) return turn; await new Promise(resolve => setTimeout(resolve, 10)); }
-    throw new Error('Simulation did not reach the expected state.');
+    throw new Error('External fixture did not reach the expected state.');
   };
-  return { root, previewRoot, projectRoot, identity, source, options, session, plan, driver, taskStore, manager, plans, invoke, input, waitState, events, ordinaryCalls: () => ordinaryCalls };
+  return { root, previewRoot, projectRoot, identity, source, options, session, plan, driver, approvals, taskStore, manager, plans, invoke, input, waitState, events, ordinaryCalls: () => ordinaryCalls };
 }
+
+test('missing external registration refuses options and preparation without a simulation fallback', async () => {
+  const h = await harness({ execution: null });
+  try {
+    const scope = { projectID: h.session.scope.project_id, taskID: h.session.scope.task_id };
+    await assert.rejects(h.invoke('task-execution-options', scope), { code: 'unsupported' });
+    for (const driverID of ['opencode-no-tools', 'simulation-success']) await assert.rejects(h.invoke('request-execution-authorization', h.input({ driverID })), { code: 'unsupported' });
+    assert.deepEqual(await h.manager.loadTaskSession({ format: 'task-v2', sessionID: h.session.conversation_id }), h.session);
+    assert.deepEqual(h.driver.counts, { created: 0, submitted: 0, permissions: 0 });
+    assert.equal(h.driver.inspections, 0); assert.equal(h.ordinaryCalls(), 0);
+  } finally { await h.manager.shutdown(); }
+});
+
+test('legacy simulation sessions, approvals and acceptance stay readable and byte-identical while all mutation routes refuse them', async () => {
+  const h = await harness();
+  try {
+    const record = structuredClone(h.session), model = { provider_id: 'simulation', model_id: 'simulation-v1' };
+    const now = record.created_at, refs: TaskTurnRef[] = [], approvalIDs: string[] = [];
+    for (const state of ['finished', 'prepared', 'awaiting_permission', 'unknown'] as const) {
+      const turnID = randomUUID(), inputMessageID = randomUUID(), text = `Saved legacy ${state}`;
+      const spec: ExecutionSpec = { work: { planID: h.plan.id, planVersion: h.plan.version, workItemID: h.plan.work_items[0]!.id }, title: text, kind: 'implementation', expectedResult: 'Saved history only', dependencies: [], inputMessageID, materials: [], workspace: h.options.workspace, driver: { driverID: 'simulation-success', configDigest: 'd'.repeat(64), mode: 'simulation' }, tools: state === 'awaiting_permission' ? { kind: 'restricted', readRoots: [], writeRoots: ['simulation'], commands: [] } : { kind: 'none' } };
+      const ref: TaskTurnRef = { session: { format: 'task-v2', sessionID: record.conversation_id }, turnID }; refs.push(ref);
+      const turn: TaskTurnRecord = { turn_id: turnID, client_request_id: randomUUID(), requested_model: model, state, created_at: now, updated_at: now, draft_revision: 0, execution: { spec, specDigest: taskSpecDigest(spec, model, text), eventReceipts: [], permissions: [], ...(state === 'prepared' ? {} : { authorizationID: randomUUID(), external: { runtimeID: 'old-runtime', connectionGeneration: 'old-generation', externalSessionID: randomUUID() } }), ...(state === 'finished' ? { result: { summary: 'Previously saved simulation result', artifacts: [], evidence: [] } } : {}) } };
+      if (state === 'awaiting_permission') {
+        const action = { kind: 'file-write' as const, path: 'simulation/result.txt', content: 'Saved proposal; no actual write.' };
+        turn.execution.permissions.push({ externalRequestID: randomUUID(), action, actionDigest: canonicalDigest(action) });
+      }
+      record.turns.push(turn);
+      record.messages.push({ message_id: inputMessageID, turn_id: turnID, role: 'user', text, created_at: now, updated_at: now });
+      if (state === 'finished') record.messages.push({ message_id: randomUUID(), turn_id: turnID, role: 'assistant', text: 'Previously saved simulation text', created_at: now, updated_at: now });
+    }
+    const saved = await h.taskStore.save(record, record.revision);
+    const prepared = saved.turns[1]!, permission = saved.turns[2]!.execution.permissions[0]!;
+    const approvals = [await h.approvals.request({ kind: 'execution', turn: refs[1]!, specDigest: prepared.execution.specDigest }), await h.approvals.request({ kind: 'tool', turn: refs[2]!, externalRequestID: permission.externalRequestID, actionDigest: permission.actionDigest })];
+    approvalIDs.push(...approvals.map(value => value.id));
+    const resultDigest = taskResultDigest(saved.turns[0]!);
+    const accepted = await new ExecutionAcceptanceStore(h.previewRoot).record({ turn: refs[0]!, resultDigest, decision: 'accepted', actor: 'old-user', now: new Date(now) });
+    const files = [join(h.taskStore.root, `${record.conversation_id}.json`), ...approvals.map(value => join(h.previewRoot, 'execution-approvals-v1', `${value.id}.json`)), join(h.previewRoot, 'execution-acceptances-v1', `${accepted.id}.json`)];
+    const before = await Promise.all(files.map(file => readFile(file)));
+    assert.deepEqual(await h.invoke('load-task-session', refs[0]!.session), saved);
+    assert.deepEqual(await h.invoke('list-execution-approvals', refs[1]), [approvals[0]]);
+    assert.deepEqual((await h.invoke<{ acceptance: unknown }>('get-work-item-review', refs[0])).acceptance, accepted);
+    for (const [channel, input] of [
+      ['request-execution-authorization', h.input()],
+      ['decide-execution-approval', { requestID: approvalIDs[0], choice: 'approve' }],
+      ['decide-execution-approval', { requestID: approvalIDs[1], choice: 'reject' }],
+      ['start-task-execution', { turn: refs[1], approvalID: approvalIDs[0] }],
+      ['cancel-task-execution', refs[1]], ['cancel-task-execution', refs[2]],
+      ['reply-task-permission', { turn: refs[2], approvalID: approvalIDs[1] }],
+      ['reconcile-task-execution', refs[3]],
+      ['review-work-item', { turn: refs[0], resultDigest, choice: 'reject' }],
+      ['retry-task-pending-writes', refs[0]!.session],
+    ] as const) await assert.rejects(h.invoke(channel, input), { code: 'unsupported' }, channel);
+    assert.deepEqual(await Promise.all(files.map(file => readFile(file))), before);
+    assert.deepEqual(h.driver.counts, { created: 0, submitted: 0, permissions: 0 }); assert.equal(h.driver.inspections, 0);
+  } finally { await h.manager.shutdown(); }
+});
 
 test('fixed task IPC keeps save, approve, start and acceptance separate and never submits a duplicate', async () => {
   const h = await harness();
@@ -139,7 +199,7 @@ test('fixed task IPC keeps save, approve, start and acceptance separate and neve
     const accepted = await h.invoke('review-work-item', decision);
     assert.deepEqual(await h.invoke('review-work-item', decision), accepted);
     assert.equal((await h.manager.getTaskTurn(prepared.turn)).state, 'finished');
-    assert.equal(finished.requested_model.provider_id, 'simulation');
+    assert.equal(finished.requested_model.provider_id, 'fixture-provider');
     assert.ok(h.events.some(event => event.type === 'task-session-updated'));
     assert.equal(await readFile(join(h.projectRoot, '.screendeck', 'project.json'), 'utf8'), h.identity);
     assert.deepEqual(h.source.tasks[0]!.run_ids, []);
@@ -147,32 +207,11 @@ test('fixed task IPC keeps save, approve, start and acceptance separate and neve
   } finally { await h.manager.shutdown(); }
 });
 
-test('tool approval binds an exact action and requires a separate single delivery', async () => {
-  const h = await harness();
-  try {
-    const prepared = await h.invoke<PreparedAuthorization>('request-execution-authorization', h.input({ tools: { kind: 'restricted', readRoots: [], writeRoots: ['simulation'], commands: [] } }));
-    await h.invoke('decide-execution-approval', { requestID: prepared.request.id, choice: 'approve' });
-    await h.invoke('start-task-execution', { turn: prepared.turn, approvalID: prepared.request.id });
-    const paused = await h.waitState(prepared.turn, ['awaiting_permission']);
-    assert.equal(paused.execution.permissions[0]?.action.kind, 'file-write');
-    const approvals = await h.invoke<Array<{ id: string; target: { kind: string } }>>('list-execution-approvals', prepared.turn);
-    const tool = approvals.find(approval => approval.target.kind === 'tool')!;
-    assert.ok(tool);
-    await assert.rejects(h.invoke('reply-task-permission', { turn: prepared.turn, approvalID: tool.id }), { code: 'not-approved' });
-    await h.invoke('decide-execution-approval', { requestID: tool.id, choice: 'approve' });
-    assert.equal(h.driver.counts.permissions, 0);
-    await h.invoke('reply-task-permission', { turn: prepared.turn, approvalID: tool.id });
-    await h.waitState(prepared.turn, ['finished']);
-    // A repeated delivery cannot permit a second action, even if the first UI receipt was lost.
-    await h.invoke('reply-task-permission', { turn: prepared.turn, approvalID: tool.id }).catch(() => undefined);
-    assert.equal(h.driver.counts.permissions, 1);
-  } finally { await h.manager.shutdown(); }
-});
-
 test('unknown attempts block plan edits and new starts, and reload never replays them', async () => {
-  const h = await harness();
+  const driver = new ExternalFixtureDriver(); driver.loseReceipt = true; driver.unverifiable = true;
+  const h = await harness({ driver });
   try {
-    const prepared = await h.invoke<PreparedAuthorization>('request-execution-authorization', h.input({ driverID: 'simulation-unknown' }));
+    const prepared = await h.invoke<PreparedAuthorization>('request-execution-authorization', h.input());
     await h.invoke('decide-execution-approval', { requestID: prepared.request.id, choice: 'approve' });
     await h.invoke('start-task-execution', { turn: prepared.turn, approvalID: prepared.request.id });
     await h.waitState(prepared.turn, ['unknown']);
@@ -182,27 +221,10 @@ test('unknown attempts block plan edits and new starts, and reload never replays
     assert.equal(reconciled.state, 'unknown');
     await h.invoke('start-task-execution', { turn: prepared.turn, approvalID: prepared.request.id }).catch(() => undefined);
     assert.equal(h.driver.counts.created, 1);
-    const restartedDriver = new FakeTaskExecutionDriver({ stepDelayMs: 1 });
+    const restartedDriver = new ExternalFixtureDriver();
     const restarted = new SessionManager({ store: new SessionHistoryStore(join(h.previewRoot, 'sessions')), driver: { capabilities: { chat: true, tools: false, remoteSessions: false, remoteAbort: false }, execute: async () => { throw new Error('No ordinary execution'); } }, task: { store: new TaskSessionHistoryStore(h.previewRoot), driver: restartedDriver } });
     try { assert.equal((await restarted.loadTaskSession(prepared.turn.session))?.turns.at(-1)?.state, 'unknown'); assert.equal((await restarted.reconcileTaskExecution(prepared.turn)).state, 'unknown'); assert.equal(restartedDriver.counts.created, 0); }
     finally { await restarted.shutdown(); }
-  } finally { await h.manager.shutdown(); }
-});
-
-test('confirmed cancellation closes an unanswered tool wait without inventing a permission receipt', async () => {
-  const h = await harness();
-  try {
-    const prepared = await h.invoke<PreparedAuthorization>('request-execution-authorization', h.input({ tools: { kind: 'restricted', readRoots: [], writeRoots: ['simulation'], commands: [] } }));
-    await h.invoke('decide-execution-approval', { requestID: prepared.request.id, choice: 'approve' });
-    await h.invoke('start-task-execution', { turn: prepared.turn, approvalID: prepared.request.id });
-    await h.waitState(prepared.turn, ['awaiting_permission']);
-    const cancelled = await h.invoke<{ state: string; execution: { permissions: Array<{ delivery?: string }> } }>('cancel-task-execution', prepared.turn);
-    assert.equal(cancelled.state, 'cancelled');
-    assert.equal(cancelled.execution.permissions[0]?.delivery, undefined, 'nothing was delivered; do not forge a rejection receipt');
-    assert.equal(h.driver.counts.permissions, 0);
-    const next = await h.invoke<PreparedAuthorization>('request-execution-authorization', h.input());
-    assert.notEqual(next.turn.turnID, prepared.turn.turnID);
-    assert.equal(h.driver.counts.created, 1, 'new preparation still needs a new approval and explicit start');
   } finally { await h.manager.shutdown(); }
 });
 

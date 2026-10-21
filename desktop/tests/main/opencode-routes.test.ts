@@ -1,24 +1,25 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, realpath } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { installOpenCodeRoutes } from '../../src/main/opencode-routes.js';
 import { ProviderSettingsStore } from '../../src/main/provider-settings.js';
 import type { OpenCodeRuntime } from '../../src/main/opencode-runtime.js';
-import type { OpenCodeConnection } from '../../src/core/opencode-adapter.js';
+import type { OpenCodeConnection } from '../../src/core/agents/opencode/opencode-adapter.js';
 import { OpenCodeRuntimeError } from '../../src/main/opencode-runtime.js';
-import { StorageError } from '../../src/core/private-storage.js';
+import { StorageError } from '../../src/core/storage/private-storage.js';
 import type { OpenCodeBinaryCandidate, OpenCodeInstallation, DesktopEvent, OpenCodeStatus } from '../../src/shared/desktop-api.js';
 
-async function harness(options: { stored?: boolean; decryptPause?: Promise<void> } = {}) {
+async function harness(options: { stored?: boolean } = {}) {
   const root = await mkdtemp(join(await realpath(tmpdir()), 'screendeck-runtime-routes-'));
-  let decrypts = 0;
-  const cipher = { available: () => true, encrypt: (text: string) => Buffer.from(text), decrypt: async (bytes: Buffer) => { decrypts++; await options.decryptPause; return bytes.toString(); } };
-  const writer = new ProviderSettingsStore(root, cipher); await writer.initialize();
+  const writer = new ProviderSettingsStore(root); await writer.initialize();
   if (options.stored) await writer.save({ baseURL: 'https://fixture.example/v1', modelID: 'fixture-model', apiKey: 'fixture-secret', rememberKey: true });
-  const settings = options.stored ? new ProviderSettingsStore(root, cipher) : writer;
+  const settings = options.stored ? new ProviderSettingsStore(root) : writer;
   if (options.stored) await settings.initialize();
+  let preparations = 0;
+  const prepareRequest = settings.prepareRequest.bind(settings);
+  settings.prepareRequest = beforeLoading => { preparations++; return prepareRequest(beforeLoading); };
   const handlers = new Map<string, (input: unknown) => unknown>();
   const events: DesktopEvent[] = [];
   let connection: OpenCodeConnection | undefined;
@@ -54,16 +55,16 @@ async function harness(options: { stored?: boolean; decryptPause?: Promise<void>
   let runtimeGeneration: string | undefined;
   installOpenCodeRoutes({ onStarted: generation => { runtimeGeneration = generation; }, requiresRestart: () => runtimeGeneration !== settings.generation, host: { handle: (name, handler) => { handlers.set(name, handler); }, broadcast: event => { events.push(event); } }, settings, runtime, discovery, openInstallGuide: async () => { guideCalls++; }, chooseBinary: () => { chooserCalls++; return chosen(); } });
   const invoke = async (name: string, value?: unknown) => await handlers.get(name)!(value) as OpenCodeStatus;
-  return { settings, invoke, events, remembered, resolves: () => resolves, failVersion: () => { versionFailure = true; }, candidates: (values: OpenCodeBinaryCandidate[], preferred?: string) => { candidates = values; preferredID = preferred; }, chooserCalls: () => chooserCalls, guideCalls: () => guideCalls, staleAfter: (count: number) => { staleAfter = count; }, failRemember: () => { rememberFailure = true; }, starts: () => starts, input: () => input, decrypts: () => decrypts, choose: (fn: typeof chosen) => { chosen = fn; }, pause: (value: Promise<void>) => { startPause = value; }, fail: () => { failure = true; } };
+  return { root, settings, invoke, events, remembered, resolves: () => resolves, failVersion: () => { versionFailure = true; }, candidates: (values: OpenCodeBinaryCandidate[], preferred?: string) => { candidates = values; preferredID = preferred; }, chooserCalls: () => chooserCalls, guideCalls: () => guideCalls, staleAfter: (count: number) => { staleAfter = count; }, failRemember: () => { rememberFailure = true; }, starts: () => starts, input: () => input, preparations: () => preparations, choose: (fn: typeof chosen) => { chosen = fn; }, pause: (value: Promise<void>) => { startPause = value; }, fail: () => { failure = true; } };
 }
 
-test('runtime status and cancelled chooser never read credentials or start a process', async () => {
+test('runtime status and cancelled chooser never prepare a provider request or start a process', async () => {
   const h = await harness();
   await h.settings.save({ baseURL: 'https://fixture.example/v1', modelID: 'fixture-model', apiKey: 'fixture-secret', rememberKey: true });
   h.choose(async () => undefined);
   assert.deepEqual(await h.invoke('opencode-status'), { state: 'stopped' });
   assert.equal(await h.invoke('choose-opencode-binary'), undefined);
-  assert.equal(h.starts(), 0); assert.equal(h.decrypts(), 0);
+  assert.equal(h.starts(), 0); assert.equal(h.preparations(), 0);
   for (const input of [{ binaryPath: '/untrusted' }, { baseURL: 'http://remote' }, {}, null, []]) await assert.rejects(h.invoke('start-opencode', input), { code: 'ipc-input' });
 });
 
@@ -120,26 +121,27 @@ test('settings saved during startup invalidate new submissions without retargeti
 });
 
 
-test('installation metadata, manual selection and install guide do not decrypt or connect', async () => {
+test('installation metadata, manual selection and install guide do not prepare a provider request or connect', async () => {
   const h = await harness({ stored: true });
+  assert.deepEqual(h.settings.publicSettings(), { baseURL: 'https://fixture.example/v1', modelID: 'fixture-model', hasKey: true, credentialStorage: 'file' });
   await h.invoke('opencode-installation');
   const chosen = await h.invoke('choose-opencode-binary') as unknown as OpenCodeBinaryCandidate;
   assert.equal(chosen.source, 'manual');
   await h.invoke('opencode-install-guide');
   assert.equal(h.guideCalls(), 1); assert.equal(h.chooserCalls(), 1);
-  assert.equal(h.decrypts(), 0); assert.equal(h.starts(), 0); assert.equal(h.remembered.length, 0);
+  assert.equal(h.preparations(), 0); assert.equal(h.starts(), 0); assert.equal(h.remembered.length, 0);
   for (const name of ['opencode-installation', 'choose-opencode-binary', 'opencode-install-guide']) {
     await assert.rejects(h.invoke(name, { url: 'https://forged.example', path: '/arbitrary/program' }), { code: 'ipc-input' });
   }
 });
 
-test('missing, ambiguous and forged candidates fail before credential access without opening a chooser', async () => {
+test('missing, ambiguous and forged candidates fail before provider preparation without opening a chooser', async () => {
   const h = await harness({ stored: true });
   h.candidates([]); await assert.rejects(h.invoke('start-opencode'));
   h.candidates([{ id: 'a'.repeat(64), path: '/fixture/a', source: 'path' }, { id: 'b'.repeat(64), path: '/fixture/b', source: 'standard' }]);
   await assert.rejects(h.invoke('start-opencode'));
   await assert.rejects(h.invoke('start-opencode', { candidateID: 'c'.repeat(64) }));
-  assert.equal(h.decrypts(), 0); assert.equal(h.starts(), 0); assert.equal(h.chooserCalls(), 0);
+  assert.equal(h.preparations(), 0); assert.equal(h.starts(), 0); assert.equal(h.chooserCalls(), 0);
   await h.invoke('start-opencode', { candidateID: 'b'.repeat(64) });
   assert.equal(h.input()?.binaryPath, '/fixture/b'); assert.deepEqual(h.remembered, ['/fixture/b']);
 });
@@ -147,20 +149,16 @@ test('missing, ambiguous and forged candidates fail before credential access wit
 test('one discovered candidate connects without chooser and is remembered only after success', async () => {
   const h = await harness({ stored: true });
   await h.invoke('start-opencode');
-  assert.equal(h.starts(), 1); assert.equal(h.chooserCalls(), 0); assert.equal(h.decrypts(), 1);
+  assert.equal(h.starts(), 1); assert.equal(h.chooserCalls(), 0); assert.equal(h.preparations(), 1);
   assert.deepEqual(h.remembered, ['/fixture/opencode']);
   const failed = await harness({ stored: true }); failed.fail();
   await assert.rejects(failed.invoke('start-opencode')); assert.deepEqual(failed.remembered, []);
 });
 
-test('program replaced while awaiting credential access cannot connect or be remembered', async () => {
-  let release!: () => void;
-  const wait = new Promise<void>(resolve => { release = resolve; });
-  const h = await harness({ stored: true, decryptPause: wait }); h.staleAfter(1);
-  const pending = h.invoke('start-opencode');
-  while (!h.decrypts()) await new Promise(resolve => setImmediate(resolve));
-  release(); await assert.rejects(pending, { code: 'candidate-stale' });
-  assert.equal(h.starts(), 0); assert.deepEqual(h.remembered, []);
+test('program replaced between candidate checks cannot connect or be remembered', async () => {
+  const h = await harness({ stored: true }); h.staleAfter(1);
+  await assert.rejects(h.invoke('start-opencode'), { code: 'candidate-stale' });
+  assert.equal(h.preparations(), 1); assert.equal(h.starts(), 0); assert.deepEqual(h.remembered, []);
 });
 
 test('failed path persistence preserves the verified ready connection and generation', async () => {
@@ -176,14 +174,26 @@ test('failed path persistence preserves the verified ready connection and genera
 test('an ambiguous or empty initial discovery cannot resolve a new implicit choice while preparing', async () => {
   const h = await harness({ stored: true }); h.candidates([]);
   await assert.rejects(h.invoke('start-opencode'), { code: 'discovery-missing' });
-  assert.equal(h.resolves(), 0); assert.equal(h.decrypts(), 0);
+  assert.equal(h.resolves(), 0); assert.equal(h.preparations(), 0);
   h.candidates([{ id: 'a'.repeat(64), path: '/fixture/a', source: 'path' }, { id: 'b'.repeat(64), path: '/fixture/b', source: 'path' }]);
   await assert.rejects(h.invoke('start-opencode'), { code: 'discovery-ambiguous' });
-  assert.equal(h.resolves(), 0); assert.equal(h.decrypts(), 0);
+  assert.equal(h.resolves(), 0); assert.equal(h.preparations(), 0);
 });
 
 test('incompatible Runtime versions expose the supported version through the trusted storage error envelope', async () => {
   const h = await harness({ stored: true }); h.failVersion();
   await assert.rejects(h.invoke('start-opencode'), error => error instanceof StorageError && error.code === 'runtime-version' && /1\.19\.0/.test(error.message) && !error.message.includes('synthetic-untrusted-runtime-text'));
   assert.deepEqual(h.remembered, []); assert.equal(h.chooserCalls(), 0);
+});
+
+test('external provider or credential edits prevent a runtime start without exposing or replacing the file', async () => {
+  for (const name of ['provider.toml', 'credential.json']) {
+    const h = await harness({ stored: true });
+    const external = `externally changed ${name} fixture`;
+    await writeFile(join(h.root, name), external);
+    await assert.rejects(h.invoke('start-opencode'), { code: 'settings-conflict' });
+    assert.equal(h.starts(), 0); assert.deepEqual(h.remembered, []);
+    assert.equal(await readFile(join(h.root, name), 'utf8'), external);
+    assert.doesNotMatch(JSON.stringify(h.events), /fixture-secret/);
+  }
 });

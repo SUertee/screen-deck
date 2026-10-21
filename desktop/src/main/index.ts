@@ -1,24 +1,24 @@
-import { app, dialog, safeStorage, shell } from 'electron';
+import { app, dialog, shell } from 'electron';
 import path from 'node:path';
 import os from 'node:os';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { ChatCompletionsAdapter, SessionHistoryStore, SessionManager, TaskOrchestrator, StorageError, type ExecutionDriver } from '../core/index.js';
 import { ProjectWorkspaceReader } from '../projects/index.js';
 import { ProviderSettingsStore } from './provider-settings.js';
+import { ProviderModelsService } from './provider-models.js';
 import { LocalState } from './local-state.js';
 import { ElectronHost } from './electron-host.js';
-import { installDesktopRoutes, persistProjectRegistry } from './desktop-routes.js';
-import { TaskSessionHistoryStore } from '../core/task-session-history-store.js';
-import { OpenCodeAcpAdapter } from './opencode-acp-adapter.js';
+import { installDesktopRoutes } from './desktop-routes.js';
+import { ProjectRegistry } from './project-registry.js';
+import { TaskSessionHistoryStore } from '../core/sessions/task-session-history-store.js';
+import { OpenCodeAcpAdapter } from '../core/agents/opencode/opencode-acp-adapter.js';
 import { installTaskExecutionRoutes } from './task-execution-routes.js';
-import { ApprovalService } from '../core/approval-service.js';
+import { ApprovalService } from '../core/approvals/approval-service.js';
 import { OpenCodeRuntime } from './opencode-runtime.js';
 import { installOpenCodeRoutes } from './opencode-routes.js';
 import { OpenCodeDiscovery } from './opencode-discovery.js';
-import { FakeTaskExecutionDriver } from '../core/fake-task-execution-driver.js';
-import { isolatedSimulationEnabled } from './test-execution-mode.js';
-import { AgentSessionHistoryStore } from '../core/agent-session-history-store.js';
-import { OpenCodeAgentChatAdapter } from './opencode-agent-chat-adapter.js';
+import { AgentSessionHistoryStore } from '../core/sessions/agent-session-history-store.js';
+import { OpenCodeAgentChatAdapter } from '../core/agents/opencode/opencode-agent-chat-adapter.js';
 import { installAgentChatRoutes } from './agent-chat-routes.js';
 
 ElectronHost.registerScheme();
@@ -38,14 +38,10 @@ let runtimeSettingsGeneration: string | undefined;
 
 async function initialize(): Promise<void> {
   await app.whenReady();
+  if (process.platform === 'darwin') app.dock?.setIcon(path.join(__dirname, 'brand', 'screendeck-icon-black.png'));
   host.installProtocol();
-  settings = new ProviderSettingsStore(previewRoot, {
-    available: async () => await safeStorage.isAsyncEncryptionAvailable() && (process.platform !== 'linux' || !['basic_text', 'unknown'].includes(safeStorage.getSelectedStorageBackend())),
-    encrypt: value => safeStorage.encryptStringAsync(value),
-    decrypt: async value => (await safeStorage.decryptStringAsync(value)).result,
-  });
+  settings = new ProviderSettingsStore(previewRoot);
   await settings.initialize();
-  const simulationFixture = await isolatedSimulationEnabled(app.isPackaged, previewRoot, process.env.SCREENDECK_TEST_TASK_EXECUTION);
   const driver: ExecutionDriver = {
     capabilities: { chat: true, tools: false, remoteSessions: false, remoteAbort: false },
     async execute(request, onEvent, signal) {
@@ -56,21 +52,17 @@ async function initialize(): Promise<void> {
   };
   const approvals = new ApprovalService(previewRoot);
   const agentDriver = new OpenCodeAgentChatAdapter({ getConnection: () => runtime.getACPConnection(), canStart: () => runtimeSettingsGeneration === settings.generation });
-  manager = new SessionManager({ store: new SessionHistoryStore(path.join(previewRoot, 'sessions')), driver, agent: { store: new AgentSessionHistoryStore(previewRoot), driver: agentDriver }, task: { store: new TaskSessionHistoryStore(previewRoot), driver: simulationFixture ? new FakeTaskExecutionDriver() : new OpenCodeAcpAdapter({ getConnection: () => runtime.getACPConnection(), canStart: () => runtimeSettingsGeneration === settings.generation }), resolveApproval: id => approvals.loadExecutionApproval(id) } });
+  manager = new SessionManager({ store: new SessionHistoryStore(path.join(previewRoot, 'sessions')), driver, agent: { store: new AgentSessionHistoryStore(previewRoot), driver: agentDriver }, task: { store: new TaskSessionHistoryStore(previewRoot), driver: new OpenCodeAcpAdapter({ getConnection: () => runtime.getACPConnection(), canStart: () => runtimeSettingsGeneration === settings.generation }), resolveApproval: id => approvals.loadExecutionApproval(id) } });
   manager.subscribe(event => host.broadcast(event));
   manager.subscribeAgent(event => host.broadcast(event));
   const plans = new TaskOrchestrator(previewRoot);
   local = new LocalState(path.join(previewRoot, 'local-state'));
   const projects = new ProjectWorkspaceReader({ privateRoot: process.env.SCREENDECK_PROJECT_HISTORY_ROOT });
-  try {
-    const roots = await local.read<unknown>('project-roots', []);
-    if (!Array.isArray(roots) || roots.length > 100 || roots.some(root => typeof root !== 'string' || !path.isAbsolute(root))) throw new Error();
-    for (const root of roots) { const result = await projects.read(root); if (!result.project) diagnostics.push(...result.diagnostics.map(issue => issue.message)); }
-    // Explicit developer launch request to view ScreenDeck's own project, not arbitrary path from a web page.
-    if (process.env.SCREENDECK_INITIAL_PROJECT) { const result = await projects.read(process.env.SCREENDECK_INITIAL_PROJECT); if (result.project && result.status !== 'error') await persistProjectRegistry(local, projects); else diagnostics.push(...result.diagnostics.map(issue => issue.message)); }
-  } catch { diagnostics.push('预览项目索引读取失败，未修改来源记录。'); }
+  const projectRegistry = new ProjectRegistry(local, projects);
+  // Explicit developer launch request, never a project path supplied by a web page.
+  await projectRegistry.initialize(process.env.SCREENDECK_INITIAL_PROJECT);
   installDesktopRoutes({
-    settings, manager, projects, plans, local, host, diagnostics, previewRoot,
+    settings, providerModels: new ProviderModelsService(settings, local), manager, projects, projectRegistry, plans, local, host, diagnostics, previewRoot,
     withSettingsSnapshot: (snapshot, operation) => callSettings.run(snapshot, operation),
   });
   installAgentChatRoutes({ host, manager, projects, sources: () => {
@@ -89,7 +81,7 @@ async function initialize(): Promise<void> {
     const choice = await dialog.showOpenDialog({ title: '选择 OpenCode 1.19.0 可执行文件', properties: ['openFile'] });
     return choice.canceled ? undefined : choice.filePaths[0];
   } });
-  installTaskExecutionRoutes({ manager, plans, projects, host, previewRoot, approvals, execution: simulationFixture ? undefined : {
+  installTaskExecutionRoutes({ manager, plans, projects, host, previewRoot, approvals, execution: {
     current: () => {
       const connection = runtime.getACPConnection();
       return connection && runtimeSettingsGeneration === settings.generation ? { drivers: [{ driverID: 'opencode-acp-no-tools', configDigest: connection.configDigest, mode: 'external' }], model: { ...connection.model } } : { drivers: [], model: connection ? { ...connection.model } : { provider_id: 'screendeck', model_id: settings.publicSettings().modelID } };

@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { TaskOrchestrator } from '../../src/core/task-orchestrator.js';
+import { TaskOrchestrator } from '../../src/core/tasks/task-orchestrator.js';
 import type { PreviewPlanScope } from '../../src/shared/types.js';
 
 const scope: PreviewPlanScope = { project_id: 'project-abcdef00-0000-0000-0000-000000000000', task_id: 'task-001' };

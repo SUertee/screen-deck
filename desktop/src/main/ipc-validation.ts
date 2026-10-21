@@ -1,4 +1,4 @@
-import { StorageError } from '../core/private-storage.js';
+import { StorageError } from '../core/storage/private-storage.js';
 
 export function payload(value: unknown, allowed: string[]): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !allowed.includes(key))) throw new StorageError('ipc-input', '请求参数无效。');

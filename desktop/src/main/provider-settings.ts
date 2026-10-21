@@ -1,14 +1,10 @@
 import path from 'node:path';
+import { lstat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import * as TOML from '@iarna/toml';
-import { atomicReplace, checkDirectories, readBytes, StorageError, withExclusiveLock } from '../core/private-storage.js';
+import { atomicReplace, checkDirectories, readBytes, StorageError, withExclusiveLock } from '../core/storage/private-storage.js';
 import type { LLMProviderConfig, ProviderSettings, SettingsInput } from '../shared/desktop-api.js';
 
-export interface CredentialCipher {
-  available(): boolean | Promise<boolean>;
-  encrypt(value: string): Buffer | Promise<Buffer>;
-  decrypt(value: Buffer): string | Promise<string>;
-}
 export interface ProviderRequestSnapshot extends Readonly<LLMProviderConfig> {
   readonly credential: string | undefined;
 }
@@ -22,7 +18,7 @@ export function validateProvider(baseURL: unknown, modelID: unknown): { baseURL:
   return { baseURL: url.href.replace(/\/+$/, ''), modelID: modelID.trim() };
 }
 
-/** Main-process only: public preferences and encrypted credential are separate files. */
+/** Main-process only: public preferences and the plaintext credential are separate private files. */
 export class ProviderSettingsStore {
   private settingsGeneration = randomUUID();
   get generation(): string { return this.settingsGeneration; }
@@ -34,7 +30,7 @@ export class ProviderSettingsStore {
   private observedKey: Buffer | undefined;
   private boundBaseURL: string | undefined;
   readonly diagnostics: string[] = [];
-  constructor(private readonly root: string, private readonly cipher: CredentialCipher) {}
+  constructor(private readonly root: string) {}
 
   async initialize(): Promise<void> {
     await checkDirectories(this.root, true);
@@ -48,10 +44,27 @@ export class ProviderSettingsStore {
         this.boundBaseURL = this.preferences.baseURL;
       } catch { this.diagnostics.push('预览模型配置无效，已使用默认地址；原文件未覆盖。'); }
     }
-    const encrypted = await readBytes(path.join(this.root, 'credential.bin'), 16_384);
-    this.observedKey = encrypted;
-    // Startup must not touch the OS keychain. The first request loads the saved key.
-    if (encrypted?.length) this.storage = 'locked';
+    this.observedKey = await readBytes(path.join(this.root, 'credential.json'), 16_384);
+    if (this.observedKey?.length) {
+      try {
+        const record = JSON.parse(this.observedKey.toString('utf8'));
+        if (record !== null) {
+          if (!record || Array.isArray(record) || typeof record !== 'object' || Object.keys(record).length !== 3 || record.schema_version !== 1 || record.base_url !== this.boundBaseURL || typeof record.api_key !== 'string') throw new Error();
+          this.validateKey(record.api_key);
+          this.credential = record.api_key;
+          this.storage = 'file';
+        }
+      } catch { this.diagnostics.push('已保存密钥的格式或地址关联无效，请重新填写并保存；原文件未修改。'); }
+    }
+    // Old ciphertext is never read, decrypted, migrated or deleted.
+    if (this.observedKey === undefined) {
+      try {
+        await lstat(path.join(this.root, 'credential.bin'));
+        this.diagnostics.push('旧版密钥未导入，请在模型服务中重新填写并保存。');
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') this.diagnostics.push('无法检查旧版密钥记录，请重新填写并保存密钥。');
+      }
+    }
   }
 
   publicSettings(): ProviderSettings { return { ...this.preferences, hasKey: !!this.credential, credentialStorage: this.storage }; }
@@ -59,55 +72,48 @@ export class ProviderSettingsStore {
     return Object.freeze({ baseURL: this.preferences.baseURL, modelID: this.preferences.modelID, credential: this.credential });
   }
 
-  ensureCredential(): Promise<ProviderSettings> {
-    return this.enqueue(async () => {
-      await this.loadCredential();
-      return this.publicSettings();
-    });
-  }
-
   /** Capture the destination and key before the queue permits a later settings save. */
-  prepareRequest(beforeLoading?: () => Promise<void>): Promise<ProviderRequestSnapshot> {
+  prepareRequest(beforeSnapshot?: () => Promise<void>): Promise<ProviderRequestSnapshot> {
     return this.enqueue(async () => {
       // The caller owns validation; reserve its settings order before asynchronous checks.
-      await beforeLoading?.();
-      await this.loadCredential();
+      await beforeSnapshot?.();
+      await this.assertUnchanged();
+      if (!this.credential) throw new StorageError('credential-missing', '请先在设置中填写并保存 API 密钥。');
       return this.snapshot();
     });
   }
 
-  save(input: SettingsInput): Promise<ProviderSettings> {
+  /** Explicit connection checks may use a draft destination/key without saving it. */
+  previewRequest(input: { baseURL: string; apiKey?: string }): Promise<ProviderRequestSnapshot> {
     return this.enqueue(async () => {
-      const preferences = validateProvider(input.baseURL, input.modelID);
-      if (typeof input.rememberKey !== 'boolean' || input.forgetKey !== undefined && typeof input.forgetKey !== 'boolean') throw new StorageError('settings-invalid', '凭据保存选择无效。');
+      const preferences = validateProvider(input.baseURL, this.preferences.modelID);
       if (input.apiKey !== undefined && input.apiKey !== '') this.validateKey(input.apiKey);
+      await this.assertUnchanged();
+      const credential = input.apiKey?.trim() || (preferences.baseURL === this.preferences.baseURL ? this.credential : undefined);
+      if (!credential) throw new StorageError('credential-missing', '请填写该服务的 API 密钥后重试。');
+      return Object.freeze({ ...preferences, credential });
+    });
+  }
+
+  save(input: SettingsInput, expectedGeneration?: string): Promise<ProviderSettings> {
+    return this.enqueue(async () => {
+      if (expectedGeneration !== undefined && expectedGeneration !== this.settingsGeneration) throw new StorageError('settings-changed', '模型连接已变更，请重新选择或校验。');
+      const preferences = validateProvider(input.baseURL, input.modelID);
+      if (input.rememberKey !== undefined && typeof input.rememberKey !== 'boolean' || input.forgetKey !== undefined && typeof input.forgetKey !== 'boolean') throw new StorageError('settings-invalid', '凭据保存选择无效。');
+      if (input.apiKey !== undefined && input.apiKey !== '') this.validateKey(input.apiKey);
+      const rememberKey = input.rememberKey !== false;
       const destinationChanged = preferences.baseURL !== this.preferences.baseURL;
       // Never silently forward a stored key to a newly edited origin/path.
       const credential = input.forgetKey ? undefined : input.apiKey?.trim() || (destinationChanged ? undefined : this.credential);
-      const preserveLocked = this.storage === 'locked' && this.boundBaseURL === preferences.baseURL && !destinationChanged && !input.forgetKey && !input.apiKey?.trim() && input.rememberKey;
-      let encrypted: Buffer = preserveLocked ? this.observedKey! : Buffer.alloc(0);
-      if (!preserveLocked && credential && input.rememberKey) {
-        await this.assertUnchanged();
-        let available: boolean;
-        try { available = await this.cipher.available(); }
-        catch { throw new StorageError('credential-save', '系统未能安全保存密钥，请检查系统授权后重试；原加密文件未修改。'); }
-        await this.assertUnchanged();
-        if (available) {
-          try {
-            encrypted = await this.cipher.encrypt(JSON.stringify({ baseURL: preferences.baseURL, key: credential }));
-            if (!Buffer.isBuffer(encrypted) || !encrypted.length) throw new Error();
-          } catch { throw new StorageError('credential-save', '系统未能安全保存密钥，请检查系统授权后重试；原加密文件未修改。'); }
-          await this.assertUnchanged();
-          if (encrypted.length > 16_384) throw new StorageError('too-large', '待保存记录超过容量上限，原文件未覆盖。');
-        }
-      }
+      const bytes = Buffer.from(JSON.stringify(credential && rememberKey ? { schema_version: 1, base_url: preferences.baseURL, api_key: credential } : null) + '\n');
+      if (bytes.length > 16_384) throw new StorageError('too-large', '待保存记录超过容量上限，原文件未覆盖。');
       try { await withExclusiveLock(path.join(this.root, 'settings.lock'), async () => {
         const configPath = path.join(this.root, 'provider.toml');
-        const keyPath = path.join(this.root, 'credential.bin');
+        const keyPath = path.join(this.root, 'credential.json');
         await this.assertUnchanged();
-        // Write credential first, then the endpoint it belongs to. No plaintext temporary file.
-        await atomicReplace(keyPath, encrypted, this.observedKey, 16_384);
-        this.observedKey = encrypted;
+        // Each replacement is owner-only (0600). A null record explicitly removes persistence.
+        await atomicReplace(keyPath, bytes, this.observedKey, 16_384);
+        this.observedKey = bytes;
         try {
           const bytes = Buffer.from(TOML.stringify({ schema_version: 1, base_url: preferences.baseURL, model_id: preferences.modelID }));
           await atomicReplace(configPath, bytes, this.observedConfig, 8192);
@@ -125,7 +131,8 @@ export class ProviderSettingsStore {
       }
       this.preferences = preferences; this.boundBaseURL = preferences.baseURL; this.credential = credential;
       this.settingsGeneration = randomUUID();
-      this.storage = preserveLocked ? 'locked' : credential ? encrypted.length ? 'encrypted' : 'memory' : 'none';
+      this.storage = credential ? rememberKey ? 'file' : 'memory' : 'none';
+      this.diagnostics.length = 0;
       return this.publicSettings();
     });
   }
@@ -138,33 +145,9 @@ export class ProviderSettingsStore {
     return result;
   }
 
-  private async loadCredential(): Promise<void> {
-    if (this.credential) return;
-    if (this.storage !== 'locked' || !this.observedKey?.length || !this.boundBaseURL || this.boundBaseURL !== this.preferences.baseURL) throw new StorageError('credential-locked', '已存密钥与有效配置无法关联，请重新填写地址与密钥。');
-    await this.assertUnchanged();
-    let available: boolean;
-    try { available = await this.cipher.available(); }
-    catch { throw this.credentialLoadError(); }
-    await this.assertUnchanged();
-    if (!available) throw this.credentialLoadError();
-    let key: string;
-    try {
-      const envelope = JSON.parse(await this.cipher.decrypt(Buffer.from(this.observedKey)));
-      if (!envelope || Array.isArray(envelope) || typeof envelope !== 'object' || Object.keys(envelope).length !== 2 || envelope.baseURL !== this.boundBaseURL || typeof envelope.key !== 'string') throw new Error();
-      this.validateKey(envelope.key); key = envelope.key;
-    } catch { throw this.credentialLoadError(); }
-    // Awaiting the system keychain allows external edits; retain the observed baseline.
-    await this.assertUnchanged();
-    this.credential = key; this.storage = 'encrypted';
-  }
-
-  private credentialLoadError(): StorageError {
-    return new StorageError('credential-locked', '系统未能读取已存密钥。请检查系统授权，或重新填写密钥；原加密文件未修改。');
-  }
-
   private async assertUnchanged(): Promise<void> {
     const equal = (actual: Buffer | undefined, observed: Buffer | undefined) => actual === undefined ? observed === undefined : observed !== undefined && actual.equals(observed);
-    if (!equal(await readBytes(path.join(this.root, 'provider.toml'), 8192), this.observedConfig) || !equal(await readBytes(path.join(this.root, 'credential.bin'), 16_384), this.observedKey)) throw new StorageError('settings-conflict', '连接配置被外部修改，请重新打开应用后检查；未覆盖已有设置。');
+    if (!equal(await readBytes(path.join(this.root, 'provider.toml'), 8192), this.observedConfig) || !equal(await readBytes(path.join(this.root, 'credential.json'), 16_384), this.observedKey)) throw new StorageError('settings-conflict', '连接配置被外部修改，请重新打开应用后检查；未覆盖已有设置。');
   }
 
   private validateKey(value: string): void {

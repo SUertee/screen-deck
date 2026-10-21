@@ -2,11 +2,11 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import { agent, client, type AgentConnection, type PromptResponse, type SessionConfigOption } from '@agentclientprotocol/sdk';
-import { ExecutionError } from '../../src/core/execution-driver.js';
-import type { AgentChatExecutionEvent, AgentChatRequest } from '../../src/core/agent-chat-driver.js';
+import { ExecutionError } from '../../src/core/sessions/execution-driver.js';
+import type { AgentChatExecutionEvent, AgentChatRequest } from '../../src/core/sessions/agent-chat-driver.js';
 import type { AgentChatBinding } from '../../src/shared/agent-chat.js';
-import type { OpenCodeAcpConnection, OpenCodeAcpEvent } from '../../src/main/opencode-acp-connection.js';
-import { OpenCodeAgentChatAdapter } from '../../src/main/opencode-agent-chat-adapter.js';
+import type { OpenCodeAcpConnection, OpenCodeAcpEvent } from '../../src/core/agents/opencode/opencode-acp-connection.js';
+import { OpenCodeAgentChatAdapter } from '../../src/core/agents/opencode/opencode-agent-chat-adapter.js';
 
 const model = { provider_id: 'screendeck', model_id: 'fixture-model' };
 const options = (): SessionConfigOption[] => [{ id: 'model', name: 'Model', category: 'model', type: 'select', currentValue: 'screendeck/fixture-model', options: [{ value: 'screendeck/fixture-model', name: 'Fixture model' }] }];

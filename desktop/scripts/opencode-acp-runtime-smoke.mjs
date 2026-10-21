@@ -8,10 +8,10 @@ import { mkdir, mkdtemp, readFile, readdir, realpath, writeFile } from 'node:fs/
 import { dirname, isAbsolute, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { OpenCodeRuntime } from '../src/main/opencode-runtime.js';
-import { OpenCodeAcpAdapter } from '../src/main/opencode-acp-adapter.js';
-import { SessionManager } from '../src/core/session-manager.js';
-import { SessionHistoryStore } from '../src/core/session-history-store.js';
-import { TaskSessionHistoryStore } from '../src/core/task-session-history-store.js';
+import { OpenCodeAcpAdapter } from '../src/core/agents/opencode/opencode-acp-adapter.js';
+import { SessionManager } from '../src/core/sessions/session-manager.js';
+import { SessionHistoryStore } from '../src/core/sessions/session-history-store.js';
+import { TaskSessionHistoryStore } from '../src/core/sessions/task-session-history-store.js';
 
 const binaryPath = process.argv[2];
 if (!binaryPath || !isAbsolute(binaryPath)) throw new Error('Usage: node --import tsx scripts/opencode-acp-runtime-smoke.mjs /absolute/path/to/opencode-1.19.0');

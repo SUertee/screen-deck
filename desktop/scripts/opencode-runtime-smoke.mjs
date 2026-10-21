@@ -6,10 +6,10 @@ import { mkdir, writeFile, mkdtemp, realpath, readFile, readdir } from "node:fs/
 import { join, isAbsolute, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { OpenCodeRuntime } from "../src/main/opencode-runtime.js";
-import { OpenCodeAdapter } from "../src/core/opencode-adapter.js";
-import { SessionManager } from "../src/core/session-manager.js";
-import { SessionHistoryStore } from "../src/core/session-history-store.js";
-import { TaskSessionHistoryStore } from "../src/core/task-session-history-store.js";
+import { OpenCodeAdapter } from "../src/core/agents/opencode/opencode-adapter.js";
+import { SessionManager } from "../src/core/sessions/session-manager.js";
+import { SessionHistoryStore } from "../src/core/sessions/session-history-store.js";
+import { TaskSessionHistoryStore } from "../src/core/sessions/task-session-history-store.js";
 const binaryPath = process.argv[2];
 if (!binaryPath || !isAbsolute(binaryPath)) throw new Error("Usage: npm run smoke:opencode -- /absolute/path/to/opencode-1.19.0");
 const root = await mkdtemp(join(await realpath(tmpdir()), "screendeck-real-runtime-probe-"));

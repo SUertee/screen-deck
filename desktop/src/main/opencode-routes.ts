@@ -2,7 +2,7 @@ import type { OpenCodeStatus } from '../shared/desktop-api.js';
 import type { ProviderSettingsStore } from './provider-settings.js';
 import { OpenCodeRuntimeError, type OpenCodeStartInput } from './opencode-runtime.js';
 import type { ElectronHost } from './electron-host.js';
-import { StorageError } from '../core/private-storage.js';
+import { StorageError } from '../core/storage/private-storage.js';
 import type { OpenCodeDiscovery } from './opencode-discovery.js';
 import { payload, textInput } from './ipc-validation.js';
 
@@ -12,7 +12,7 @@ interface OpenCodeRuntimePort {
   getConnection(): { version: string; model: import('../shared/types.js').ModelSelection } | undefined;
 }
 
-/** Discovery is metadata-only. Only explicit connection loads credentials and starts ACP. */
+/** Discovery is metadata-only. Only explicit connection prepares a provider snapshot and starts ACP. */
 export function installOpenCodeRoutes({ host, runtime, settings, discovery, chooseBinary, openInstallGuide, onStarted, requiresRestart = () => false }: {
   host: Pick<ElectronHost, 'handle' | 'broadcast'>;
   runtime: OpenCodeRuntimePort;
@@ -60,7 +60,7 @@ export function installOpenCodeRoutes({ host, runtime, settings, discovery, choo
     if (runtime.getConnection()) return status();
     pending = true;
     try {
-      // Recheck current file identity before credential access. No chooser or fallback.
+      // Recheck current file identity before preparing the provider snapshot. No chooser or fallback.
       const installation = await discovery.discover();
       candidateID ??= installation.preferredID ?? (installation.candidates.length === 1 ? installation.candidates[0].id : undefined);
       if (!candidateID) throw new StorageError(installation.candidates.length ? 'discovery-ambiguous' : 'discovery-missing', installation.candidates.length ? '检测到多个 OpenCode，请先选择本次使用的程序。' : '未检测到 OpenCode，请安装支持版本或手动选择程序。');
@@ -68,7 +68,7 @@ export function installOpenCodeRoutes({ host, runtime, settings, discovery, choo
       let generation = '';
       const snapshot = await settings.prepareRequest(async () => {
         const current = settings.publicSettings();
-        if (!current.hasKey && current.credentialStorage !== 'locked') throw new StorageError('credential-missing', '请先保存模型地址、名称与 API 密钥。');
+        if (!current.hasKey) throw new StorageError('credential-missing', '请先保存模型地址、名称与 API 密钥。');
         generation = settings.generation;
       });
       if (!snapshot.credential) throw new StorageError('credential-missing', '请先保存 API 密钥。');

@@ -7,10 +7,10 @@ import { mkdtemp, readFile, realpath, readdir, writeFile } from 'node:fs/promise
 import { join, isAbsolute } from 'node:path';
 import { tmpdir } from 'node:os';
 import { OpenCodeRuntime } from '../src/main/opencode-runtime.js';
-import { OpenCodeAgentChatAdapter } from '../src/main/opencode-agent-chat-adapter.js';
-import { SessionManager } from '../src/core/session-manager.js';
-import { SessionHistoryStore } from '../src/core/session-history-store.js';
-import { AgentSessionHistoryStore } from '../src/core/agent-session-history-store.js';
+import { OpenCodeAgentChatAdapter } from '../src/core/agents/opencode/opencode-agent-chat-adapter.js';
+import { SessionManager } from '../src/core/sessions/session-manager.js';
+import { SessionHistoryStore } from '../src/core/sessions/session-history-store.js';
+import { AgentSessionHistoryStore } from '../src/core/sessions/agent-session-history-store.js';
 
 const binaryPath = process.argv[2];
 if (!binaryPath || !isAbsolute(binaryPath)) throw new Error('Pass an already installed OpenCode 1.19.0 binary.');

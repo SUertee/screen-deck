@@ -84,7 +84,8 @@ const app = agent({ name: 'screendeck-acp-gui-fixture' })
     if (text.includes('[fixture:failure]')) { counts.failures++; save(); throw new RequestError(-32603, 'Synthetic ACP failure ' + config.provider.screendeck.options.apiKey); }
     if (text.includes('[fixture:disconnect]')) {
       await chunk(ctx, ctx.params.sessionId, 'ACP 断线前的合成片段。');
-      counts.disconnects++; save(); setTimeout(() => { connection.close(); process.stdin.destroy(); process.stdout.end(() => process.exit(0)); }, 20);
+      // Simulate a crashed Agent independently of SDK close while this prompt is pending.
+      counts.disconnects++; save(); setTimeout(() => process.exit(0), 20);
       return new Promise(() => {});
     }
     if (text.includes('[fixture:hold]')) {

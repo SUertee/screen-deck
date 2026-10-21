@@ -9,7 +9,8 @@ function Match({ text, query }: { text: string; query: string }) {
   const needle = query.trim().toLowerCase(), index = text.toLowerCase().indexOf(needle);
   return index < 0 || !needle ? <>{text}</> : <>{text.slice(0, index)}<mark>{text.slice(index, index + needle.length)}</mark>{text.slice(index + needle.length)}</>;
 }
-export function ChatSearch({ records, preferences, query, onQuery, onOpen, onClose, loading = false, origin }: {
+export function ChatSearch({ records, preferences, query, onQuery, onOpen, onClose, loading = false, origin, agentNames }: {
+  agentNames?: Readonly<Record<string, string>>;
   records: ChatRecord[]; preferences: ChatPreferences; query: string; onQuery: (value: string) => void;
   onOpen: (record: ChatRecord, messageID?: string) => void | Promise<void>; onClose: () => void; loading?: boolean; origin?: { x: number; y: number } | null;
 }) {
@@ -74,7 +75,7 @@ export function ChatSearch({ records, preferences, query, onQuery, onOpen, onClo
           {loading ? <div className="chat-search-empty" role="status"><RefreshCw size={16} className="busy-icon" aria-hidden="true" /><span>正在查找…</span></div> : matches.length ? matches.map((match, index) => {
             const key = chatKey(match.record);
             return <button role="option" aria-selected={index === activeIndex} data-active={index === activeIndex} data-chat-search-key={key} id={optionID(index)} className="chat-search-result" aria-label={`聊天：${match.record.title}`} key={key} disabled={opening} ref={node => { if (node) options.current.set(key, node); else options.current.delete(key); }} onFocus={() => setActiveKey(key)} onMouseEnter={() => setActiveKey(key)} onClick={() => void open(match)}>
-              <div className="chat-search-result-copy"><strong><Match text={match.record.title} query={query} /></strong>{match.snippet && <p className="chat-search-snippet"><Match text={match.snippet} query={query} /></p>}<span className="chat-search-meta">{isAgentChat(match.record) ? 'OpenCode' : '模型聊天'}{match.archived ? ' · 已归档' : ''} · {formatDate(match.record.updated_at)}</span></div><ChevronRight size={14} aria-hidden="true" />
+              <div className="chat-search-result-copy"><strong><Match text={match.record.title} query={query} /></strong>{match.snippet && <p className="chat-search-snippet"><Match text={match.snippet} query={query} /></p>}<span className="chat-search-meta">{isAgentChat(match.record) ? agentNames?.[match.record.source.agentID] ?? match.record.source.agentID : '模型聊天'}{match.archived ? ' · 已归档' : ''} · {formatDate(match.record.updated_at)}</span></div><ChevronRight size={14} aria-hidden="true" />
             </button>;
           }) : <div className="chat-search-empty" role="status">没有找到相关聊天</div>}
         </div>

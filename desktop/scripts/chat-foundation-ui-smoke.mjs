@@ -87,7 +87,7 @@ try {
     await expect(page.locator('.chat-search-result')).toHaveCount(2); await expect(page.locator('.chat-search-snippet mark')).toHaveCount(2);
     await expect(page.getByRole('dialog', { name: '搜索聊天', exact: true }).getByRole('combobox')).toHaveCount(0);
     await page.getByRole('option', { name: '聊天：旧连接 OpenCode', exact: true }).click();
-    await expect(page.locator('[data-search-hit="true"]')).toContainText('搜索命中'); await expect(page.getByRole('combobox', { name: '聊天来源', exact: true })).toHaveValue('agent');
+    await expect(page.locator('[data-search-hit="true"]')).toContainText('搜索命中'); await expect(page.getByRole('combobox', { name: '聊天来源', exact: true })).toHaveValue('agent:opencode');
     await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeDisabled();
   });
   await check('offline-agent-rename-preserves-unknown-and-source-binding', async () => {

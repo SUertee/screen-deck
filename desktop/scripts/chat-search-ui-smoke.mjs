@@ -153,7 +153,7 @@ try {
     const state = globalThis.__chatSearchFixture = { fixture: data, counts: { network: 0, submissions: 0, agentStarts: 0, sessionsCreated: 0, planWrites: 0, previews: 0, nativeChoosers: 0, externalLinks: 0, loads: 0 } };
     const replace = (channel, operation) => { ipcMain.removeHandler('screendeck:' + channel); ipcMain.handle('screendeck:' + channel, operation); };
     replace('bootstrap', () => state.fixture); replace('get-settings', () => state.fixture.settings);
-    replace('agent-chat-sources', () => [{ agentID: 'opencode', name: 'OpenCode', state: 'unavailable', reason: 'stopped' }]);
+    replace('agent-chat-sources', () => [{ agentID: 'opencode', name: 'OpenCode', protocol: 'acp', capabilities: { streaming: true, nativeContext: true, interrupt: true, resume: false, tools: false, approvals: false, modelSelection: false }, state: 'unavailable', reason: 'stopped' }]);
     const load = async (_event, id) => {
       state.counts.loads++;
       const found = [...state.fixture.sessions, ...state.fixture.agentSessions].find(item => item.conversation_id === id);
@@ -191,8 +191,8 @@ try {
     await expect(composer()).toHaveValue(''); await expect(source()).toHaveValue('model'); await composer().fill('新建模型草稿');
     await row(background).click(); await expect(composer()).toHaveValue('模型旧聊天草稿');
     await row(agent).click(); await composer().fill('Agent 旧聊天草稿'); await plus.click();
-    await expect(composer()).toHaveValue(''); await expect(source()).toHaveValue('agent'); await composer().fill('新建 Agent 草稿');
-    await row(agent).click(); await expect(composer()).toHaveValue('Agent 旧聊天草稿'); await expect(source()).toHaveValue('agent');
+    await expect(composer()).toHaveValue(''); await expect(source()).toHaveValue('agent:opencode'); await composer().fill('新建 Agent 草稿');
+    await row(agent).click(); await expect(composer()).toHaveValue('Agent 旧聊天草稿'); await expect(source()).toHaveValue('agent:opencode');
     assert.equal((await count()).sessionsCreated, 0); assert.equal((await count()).submissions, 0);
   });
   await check('opening-search-preserves-body-draft-scroll-plan-and-file-tab', async () => {

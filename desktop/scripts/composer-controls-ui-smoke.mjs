@@ -55,10 +55,10 @@ async function assertTextToolbar() {
   await expect(page.locator('#composer-keyboard-hint, .composer-help')).toHaveCount(0);
   assert.ok(!(await composer().getAttribute('aria-describedby') ?? '').split(/\s+/).includes('composer-keyboard-hint'));
   const selected = await source().inputValue();
-  await expect(source().locator('option:checked')).toHaveText(selected === 'agent' ? 'OpenCode' : '直接模型');
+  await expect(source().locator('option:checked')).toHaveText(selected === 'agent:opencode' ? 'OpenCode' : '直接模型');
   const nativeStyle = await source().evaluate(node => { const style = getComputedStyle(node); return { opacity: Number(style.opacity), color: style.color }; });
   assert.equal(nativeStyle.opacity, 1); assert.ok(!['transparent', 'rgba(0, 0, 0, 0)'].includes(nativeStyle.color), 'Selected source text is visible.');
-  const button = selected === 'agent' ? agentButton() : modelButton(); await expect(button).toBeVisible();
+  const button = selected === 'agent:opencode' ? agentButton() : modelButton(); await expect(button).toBeVisible();
   assert.ok((await button.innerText()).trim().length > 0, 'The settings button displays its model or connection text.');
   const controls = await page.locator('.composer').evaluate(node => [...node.querySelectorAll('.chat-source-select, .model-select, .send-button, .composer-expand')].map(control => {
     const box = control.getBoundingClientRect(); return { name: control.getAttribute('aria-label'), width: box.width, height: box.height };
@@ -80,7 +80,8 @@ try {
     const test = globalThis.__composerControls = { ...data, counts: { network: 0, submits: 0, starts: 0, creates: 0, nativeChoosers: 0, externalLinks: 0 }, stops: [] };
     const replace = (channel, operation) => { ipcMain.removeHandler('screendeck:' + channel); ipcMain.handle('screendeck:' + channel, operation); };
     replace('bootstrap', () => test.bootstrap); replace('get-settings', () => test.bootstrap.settings);
-    replace('agent-chat-sources', () => [{ agentID: 'opencode', name: 'OpenCode', state: 'unavailable', reason: 'stopped' }]);
+    test.sources = [{ agentID: 'opencode', name: 'OpenCode', protocol: 'acp', capabilities: { streaming: true, nativeContext: true, interrupt: true, resume: false, tools: false, approvals: false, modelSelection: false }, state: 'unavailable', reason: 'stopped' }];
+    replace('agent-chat-sources', () => test.sources);
     replace('opencode-status', () => ({ state: 'stopped' })); replace('opencode-installation', () => ({ candidates: [] }));
     for (const channel of ['send-message', 'send-agent-message', 'request-execution-authorization', 'start-task-execution']) replace(channel, () => { test.counts.submits++; throw new Error('Icon controls never submit.'); });
     for (const channel of ['create-session', 'create-agent-session']) replace(channel, () => { test.counts.creates++; throw new Error('Source selection never creates records.'); });
@@ -121,10 +122,10 @@ try {
       return { width: box.width, height: box.height, hit: points.every(([x, y]) => document.elementFromPoint(box.x + x, box.y + y) === node), opacity: Number(getComputedStyle(node).opacity) };
     });
     assert.ok(hit.width >= 96 && hit.width <= 128); assert.ok(Math.abs(hit.height - 32) <= 1); assert.equal(hit.hit, true); assert.equal(hit.opacity, 1);
-    await source().click(); await page.keyboard.press('Escape'); await expect(source()).toBeFocused(); await source().selectOption('agent'); await expect(source()).toHaveValue('agent');
+    await source().click(); await page.keyboard.press('Escape'); await expect(source()).toBeFocused(); await source().selectOption('agent:opencode'); await expect(source()).toHaveValue('agent:opencode');
     await expect(composer()).toHaveValue(''); await expect(agentButton()).toContainText('未连接'); await assertTextToolbar(); await screenshot('composer-dropdown-agent-idle-1440.png'); await composer().fill('Agent 图标来源草稿');
     await source().focus(); await source().selectOption('model'); await expect(source()).toHaveValue('model'); await expect(composer()).toHaveValue('模型图标来源草稿');
-    await source().click(); await page.keyboard.press('Escape'); await expect(source()).toBeFocused(); await source().selectOption('agent'); await expect(source()).toHaveValue('agent'); await expect(composer()).toHaveValue('Agent 图标来源草稿');
+    await source().click(); await page.keyboard.press('Escape'); await expect(source()).toBeFocused(); await source().selectOption('agent:opencode'); await expect(source()).toHaveValue('agent:opencode'); await expect(composer()).toHaveValue('Agent 图标来源草稿');
   });
   await check('model-text-opens-models-and-restores-focus-without-saving-or-starting', async () => {
     await source().focus(); await source().selectOption('model'); await expect(source()).toHaveValue('model');
@@ -133,7 +134,7 @@ try {
     await page.keyboard.press('Escape'); await expect(settings()).toHaveCount(0); await expect(modelButton()).toBeFocused(); await expect(composer()).toHaveValue('模型图标来源草稿');
   });
   await check('old-agent-model-text-opens-settings-and-does-not-claim-ready-or-rebind', async () => {
-    await row(agent).click(); await expect(source()).toHaveValue('agent'); await expect(agentButton()).toHaveAttribute('title', /previous-agent-bound-model/);
+    await row(agent).click(); await expect(source()).toHaveValue('agent:opencode'); await expect(agentButton()).toHaveAttribute('title', /previous-agent-bound-model/);
     await expect(agentButton()).toContainText('previous-agent-bound-model');
     await composer().fill('旧 Agent 仍不可发送'); await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeDisabled();
     await agentButton().click(); await expect(settings().getByRole('tab', { name: 'Agent 设置', exact: true })).toHaveAttribute('aria-selected', 'true');
@@ -173,8 +174,47 @@ try {
       }) };
     }); assert.equal(fit.overflow, false); assert.equal(fit.inside, true); await assertTextToolbar();
     await source().focus(); await screenshot('composer-dropdown-model-860x600.png');
-    await source().selectOption('agent'); await expect(agentButton()).toContainText('未连接'); await assertTextToolbar();
+    await source().selectOption('agent:opencode'); await expect(agentButton()).toContainText('未连接'); await assertTextToolbar();
     await screenshot('composer-dropdown-agent-idle-860x600.png'); await row(model).click();
+  });
+  await check('registered-native-agent-source-drafts-capabilities-and-missing-history-never-fall-back', async () => {
+    const native = { agentID: 'native-fixture', name: '原生测试 Agent', protocol: 'native', capabilities: { streaming: true, nativeContext: true, interrupt: false, resume: false, tools: false, approvals: false, modelSelection: false }, state: 'ready', configDigest: 'b'.repeat(64), runtimeID: randomUUID(), connectionGeneration: randomUUID(), model: { provider_id: 'native-fixture', model_id: 'native-model' } };
+    const historical = { ...record('原生能力记录', true), source: { agentID: native.agentID, configDigest: native.configDigest }, binding: { runtimeID: native.runtimeID, connectionGeneration: native.connectionGeneration, externalSessionID: 'native-ui-fixture' } };
+    await application.evaluate(({ BrowserWindow }, { native, historical }) => {
+      const state = globalThis.__composerControls; state.sources.push(native); state.bootstrap.agentSessions.push(historical);
+      for (const win of BrowserWindow.getAllWindows()) win.webContents.send('screendeck:event', { type: 'settings-updated', settings: state.bootstrap.settings });
+    }, { native, historical });
+    await expect(source().locator('option')).toHaveCount(3);
+    await page.getByRole('button', { name: '新聊天', exact: true }).click();
+    await source().selectOption('agent:opencode'); await composer().fill('OpenCode 独立来源草稿');
+    await source().selectOption('agent:native-fixture'); await composer().fill('原生 Agent 独立来源草稿');
+    await expect(agentButton()).toHaveText('native-model'); await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeEnabled();
+    await source().selectOption('agent:opencode'); await expect(composer()).toHaveValue('OpenCode 独立来源草稿');
+    await source().selectOption('agent:native-fixture'); await expect(composer()).toHaveValue('原生 Agent 独立来源草稿');
+    await screenshot('composer-native-agent-source-860x600.png');
+    await page.reload(); await row(historical).click();
+    await expect(source()).toHaveValue('agent:native-fixture');
+    await expect(page.locator('.message.assistant .message-header')).toContainText('原生测试 Agent 回复');
+    await application.evaluate(({ BrowserWindow }, historical) => {
+      const next = { ...historical, turns: [{ ...historical.turns[0], state: 'streaming' }] };
+      for (const win of BrowserWindow.getAllWindows()) win.webContents.send('screendeck:event', { type: 'agent-session-updated', session: next });
+    }, historical);
+    await expect(page.getByRole('button', { name: '停止生成', exact: true })).toBeDisabled();
+    await expect(page.getByRole('button', { name: '停止生成', exact: true })).toHaveAttribute('title', '此 Agent 未提供确认停止能力');
+    await application.evaluate(({ BrowserWindow }, historical) => {
+      const state = globalThis.__composerControls; state.sources = state.sources.filter(source => source.agentID !== historical.source.agentID);
+      for (const win of BrowserWindow.getAllWindows()) {
+        win.webContents.send('screendeck:event', { type: 'agent-session-updated', session: historical });
+        win.webContents.send('screendeck:event', { type: 'settings-updated', settings: state.bootstrap.settings });
+      }
+    }, historical);
+    await expect(source().locator('option:checked')).toContainText('未注册');
+    await expect(source()).toHaveValue('agent:native-fixture');
+    await composer().fill('旧记录不能改交 OpenCode');
+    await composer().dispatchEvent('keydown', { key: 'Enter', code: 'Enter' });
+    await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeDisabled();
+    await screenshot('composer-missing-native-agent-860x600.png');
+    await row(model).click();
   });
   await check('draft-reload-and-history-hashes-prove-controls-never-submit-or-rewrite-records', async () => {
     await expect(composer()).toHaveValue('合成写入失败应显示重试');

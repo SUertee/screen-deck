@@ -1,8 +1,10 @@
+import { ScreenRecordingSettingsPanel } from './RecordingControls';
 import React, { useEffect, useRef, useState } from 'react';
 import { Database, KeyRound, Plug, SlidersHorizontal } from 'lucide-react';
 import type { DesktopAPI, ProviderSettings, SettingsInput } from '../shared/desktop-api';
 import { Modal, Notice } from './components';
-import { OpenCodeSettings } from './OpenCodeSettings';
+import { AgentSettings } from './AgentSettings';
+import { JevConfigurationArea } from './tasks/JevConfigurationArea';
 import './provider-settings.css';
 
 export type SettingsSection = 'models' | 'tools' | 'data';
@@ -27,9 +29,10 @@ interface SettingsProps {
   dataRootLabel: string;
   runtimeAPI: DesktopAPI;
   initialSection?: SettingsSection;
+  initialJev?: boolean;
 }
 
-export function Settings({ open, settings, onClose, onSave, dataRootLabel, runtimeAPI, initialSection }: SettingsProps) {
+export function Settings({ open, settings, onClose, onSave, dataRootLabel, runtimeAPI, initialSection, initialJev }: SettingsProps) {
   const [section, setSection] = useState<SettingsSection>(initialSection ?? 'models');
   const [baseURL, setBaseURL] = useState(settings.baseURL);
   const [modelID, setModelID] = useState(settings.modelID);
@@ -238,14 +241,13 @@ export function Settings({ open, settings, onClose, onSave, dataRootLabel, runti
             </form>
           </section>
 
-          <section id="settings-panel-tools" data-testid="settings-panel-tools" role="tabpanel" aria-labelledby="settings-tab-tools" hidden={section !== 'tools'}>
+          <section id="settings-panel-tools" data-testid="settings-panel-tools" className="agent-settings-panel" role="tabpanel" aria-labelledby="settings-tab-tools" hidden={section !== 'tools'}>
             <header className="settings-section-header">
               <h3>Agent 设置</h3>
-              <p>连接本机 Agent，在聊天中使用。</p>
             </header>
-            <OpenCodeSettings api={runtimeAPI} settingsDirty={dirty || busy} onEditModel={() => selectSection('models', true)} />
+            <AgentSettings api={runtimeAPI} settingsDirty={dirty || busy} onEditModel={() => selectSection('models', true)} />
+            {open && section === 'tools' && <JevConfigurationArea api={runtimeAPI} autoFocus={initialJev} />}
             <footer className="settings-footer">
-              <p className="field-help">关闭设置不会关闭执行器或停止正在进行的请求。</p>
               <button className="button ghost" type="button" onClick={close}>完成</button>
             </footer>
           </section>
@@ -255,6 +257,7 @@ export function Settings({ open, settings, onClose, onSave, dataRootLabel, runti
               <h3>本地数据</h3>
               <p>查看数据保存位置与密钥状态。</p>
             </header>
+            <ScreenRecordingSettingsPanel api={runtimeAPI} />
             <dl className="settings-data-list">
               <dt>本地预览目录</dt><dd><code data-testid="settings-data-root">{dataRootLabel}</code><p className="field-help">保存聊天、计划与确认记录。</p></dd>
               <dt>项目记录</dt><dd>应用只读展示，不会更改原任务。</dd>

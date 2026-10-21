@@ -9,16 +9,25 @@ export function Brand({ compact = false }: { compact?: boolean }) {
 }
 
 /** A source change prepares a new chat; it never starts a runtime or moves history. */
-export function ChatSourcePicker({ value, onChange, disabled = false, state = 'default' }: {
-  value: 'model' | 'agent'; onChange: (value: 'model' | 'agent') => void; disabled?: boolean; state?: 'default' | 'loading' | 'error' | 'success';
+export function ChatSourcePicker({ value, agentID, agents, onChange, disabled = false, state = 'default' }: {
+  value: 'model' | 'agent'; agentID?: string; agents: ReadonlyArray<{ agentID: string; name: string }>;
+  onChange: (value: 'model' | 'agent', agentID?: string) => void; disabled?: boolean; state?: 'default' | 'loading' | 'error' | 'success';
 }) {
-  const name = value === 'agent' ? 'OpenCode' : '直接模型';
+  const hintID = useId();
+  const current = agents.find(agent => agent.agentID === agentID);
+  const name = value === 'agent' ? current?.name ?? agentID ?? 'Agent' : '直接模型';
   return <span className="chat-source-control" data-source={value} data-state={disabled ? 'disabled' : state} aria-busy={state === 'loading'} title={`${name} · 切换聊天来源`}>
-    <select className="chat-source-select" aria-label="聊天来源" aria-describedby="chat-source-hint" value={value} disabled={disabled} onChange={event => onChange(event.target.value === 'agent' ? 'agent' : 'model')}>
-      <option value="model">直接模型</option><option value="agent">OpenCode</option>
+    <select className="chat-source-select" aria-label="聊天来源" aria-describedby={hintID} value={value === 'agent' ? `agent:${agentID ?? ''}` : 'model'} disabled={disabled} onChange={event => {
+      const selected = event.target.value;
+      if (selected === 'model') onChange('model');
+      else { const agent = agents.find(item => `agent:${item.agentID}` === selected); if (agent) onChange('agent', agent.agentID); }
+    }}>
+      <option value="model">直接模型</option>
+      {value === 'agent' && !current && <option value={`agent:${agentID ?? ''}`} disabled>{name}（未注册）</option>}
+      {agents.map(agent => <option key={agent.agentID} value={`agent:${agent.agentID}`}>{agent.name}</option>)}
     </select>
     <ChevronDown className="chat-source-chevron" size={12} aria-hidden="true" />
-    <span id="chat-source-hint" className="visually-hidden">切换来源会进入新聊天，保留原记录与草稿。</span>
+    <span id={hintID} className="visually-hidden">切换来源会进入新聊天，保留原记录与草稿。</span>
   </span>;
 }
 

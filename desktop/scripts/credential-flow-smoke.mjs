@@ -90,7 +90,7 @@ async function fixturePage(initialSettings) {
         emit({ type: 'settings-updated', settings });
         return settings;
       },
-      getAgentSources: async () => [{ agentID: 'opencode', name: 'OpenCode', state: 'unavailable', reason: 'stopped' }],
+      getAgentSources: async () => [{ agentID: 'opencode', name: 'OpenCode', protocol: 'acp', capabilities: { streaming: true, nativeContext: true, interrupt: true, resume: false, tools: false, approvals: false, modelSelection: false }, state: 'unavailable', reason: 'stopped' }],
       getOpenCodeStatus: async () => ({ state: 'stopped' }),
       getOpenCodeInstallation: async () => ({ candidates: [] }),
       createSession: async ({ title, scope }) => {

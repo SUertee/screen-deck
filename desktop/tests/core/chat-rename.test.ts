@@ -1,3 +1,5 @@
+import { AgentChatRegistry } from '../../src/core/agents/agent-chat-registry.js';
+import { TEXT_AGENT_CAPABILITIES } from '../../src/shared/agent-capabilities.js';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
@@ -49,7 +51,7 @@ async function fixture(t: TestContext, kind: 'model' | 'agent') {
   t.after(() => rm(root, { recursive: true, force: true }));
   const model = { provider_id: 'fixture', model_id: 'fixture-model' };
   let now = '2026-10-18T01:00:00.000Z';
-  let source: AgentChatReadySource | undefined = { agentID: 'opencode', name: 'OpenCode', state: 'ready', configDigest: 'a'.repeat(64), runtimeID: randomUUID(), connectionGeneration: randomUUID(), model };
+  let source: AgentChatReadySource | undefined = { agentID: 'opencode', name: 'OpenCode', protocol: 'acp', capabilities: TEXT_AGENT_CAPABILITIES, state: 'ready', configDigest: 'a'.repeat(64), runtimeID: randomUUID(), connectionGeneration: randomUUID(), model };
   const calls = { execute: 0, source: 0 };
   let mode: 'finished' | 'unknown' | 'hold' = 'finished';
   const entered = deferred();
@@ -66,6 +68,7 @@ async function fixture(t: TestContext, kind: 'model' | 'agent') {
     },
   };
   const agent: AgentChatDriver = {
+    descriptor: { agentID: 'opencode', name: 'OpenCode', protocol: 'acp', capabilities: TEXT_AGENT_CAPABILITIES },
     getSource() { calls.source += 1; return structuredClone(source); },
     async sendTurn(request, emit) {
       calls.execute += 1;
@@ -81,7 +84,7 @@ async function fixture(t: TestContext, kind: 'model' | 'agent') {
   const controls: Controls = {};
   const chatStore = new SessionHistoryStore(join(root, 'sessions'));
   const agentStore = new AgentSessionHistoryStore(root);
-  const manager = new SessionManager({ store: kind === 'model' ? intercept(chatStore, controls) : chatStore, driver, agent: { store: kind === 'agent' ? intercept(agentStore, controls) : agentStore, driver: agent }, now: () => new Date(now), persistIntervalMs: 100_000 });
+  const manager = new SessionManager({ store: kind === 'model' ? intercept(chatStore, controls) : chatStore, driver, agent: { store: kind === 'agent' ? intercept(agentStore, controls) : agentStore, drivers: new AgentChatRegistry([{ driver: agent }]) }, now: () => new Date(now), persistIntervalMs: 100_000 });
   const initial = kind === 'model' ? await manager.createSession('Original') : await manager.createAgentSession({ title: 'Original', agentID: 'opencode' });
   const id = initial.conversation_id;
   const filename = kind === 'model' ? join(root, 'sessions', ...initial.created_at.slice(0, 10).split('-'), `${id}.json`) : join(root, 'agent-sessions-v1', `${id}.json`);

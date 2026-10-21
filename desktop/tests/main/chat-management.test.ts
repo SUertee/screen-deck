@@ -1,3 +1,5 @@
+import { AgentChatRegistry } from '../../src/core/agents/agent-chat-registry.js';
+import { TEXT_AGENT_CAPABILITIES } from '../../src/shared/agent-capabilities.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createHash, randomUUID } from 'node:crypto';
@@ -30,12 +32,13 @@ async function fixture() {
   const calls = { model: 0, agent: 0, cancel: 0 };
   const runtimeID = randomUUID(), connectionGeneration = randomUUID();
   const agentDriver: AgentChatDriver = {
-    getSource: () => ({ state: 'ready', name: 'Fixture', agentID: 'fixture', configDigest: 'a'.repeat(64), runtimeID, connectionGeneration, model: { provider_id: 'fixture', model_id: 'fixture' } }),
+    descriptor: { agentID: 'fixture', name: 'Fixture', protocol: 'native', capabilities: TEXT_AGENT_CAPABILITIES },
+    getSource: () => ({ state: 'ready', protocol: 'native', capabilities: TEXT_AGENT_CAPABILITIES, name: 'Fixture', agentID: 'fixture', configDigest: 'a'.repeat(64), runtimeID, connectionGeneration, model: { provider_id: 'fixture', model_id: 'fixture' } }),
     sendTurn: async () => { calls.agent++; assert.fail('Management must not send an Agent prompt.'); },
     cancelTurn: async () => { calls.cancel++; return { status: 'unknown' }; },
   };
   const modelStore = new SessionHistoryStore(join(root, 'sessions')), agentStore = new AgentSessionHistoryStore(root);
-  const manager = new SessionManager({ store: modelStore, driver: { capabilities: { chat: true, tools: false, remoteSessions: false, remoteAbort: false }, execute: async () => { calls.model++; assert.fail('Management must not call a model.'); } }, agent: { store: agentStore, driver: agentDriver }, task: { store: new TaskSessionHistoryStore(root), driver: new TaskDriverFixture() } });
+  const manager = new SessionManager({ store: modelStore, driver: { capabilities: { chat: true, tools: false, remoteSessions: false, remoteAbort: false }, execute: async () => { calls.model++; assert.fail('Management must not call a model.'); } }, agent: { store: agentStore, drivers: new AgentChatRegistry([{ driver: agentDriver }]) }, task: { store: new TaskSessionHistoryStore(root), driver: new TaskDriverFixture() } });
   const ordinary = await manager.createSession('Original model title'), agent = await manager.createAgentSession({ title: 'Original Agent title', agentID: 'fixture' });
   const settings = new ProviderSettingsStore(root);
   await settings.initialize();

@@ -7,6 +7,7 @@ import { isBusy, Modal } from './components';
 import './chat-foundation.css';
 
 interface Props {
+  agentNames?: Readonly<Record<string, string>>;
   records: ChatRecord[]; preferences: ChatPreferences; selectedKey?: string; pendingKey?: string; disabled?: boolean;
   onOpen: (record: ChatRecord) => void;
   onRename: (record: ChatRecord, title: string) => Promise<void>;
@@ -59,7 +60,7 @@ export function ChatHistory(props: Props) {
   return <section className="sidebar-section chat-history" aria-label={archived ? '已归档聊天列表' : '最近聊天列表'}>
     <div className="sidebar-heading"><span>{archived ? '已归档聊天' : '最近聊天'}</span><span className="chat-history-actions"><button className="icon-button" aria-label="新建聊天" title="新建聊天" onClick={() => { setArchived(false); setError(''); props.onNewChat(); }}><Plus size={15} /></button><button className="icon-button" aria-label={archived ? '返回最近聊天' : '查看已归档聊天'} title={archived ? '返回最近聊天' : '已归档聊天'} onClick={() => { setArchived(value => !value); setError(''); }}>{archived ? <ArrowLeft size={13} /> : <Archive size={13} />}</button></span></div>
     {records.slice(0, 30).map(record => <div className="chat-history-row" key={chatKey(record)}>
-      <button data-chat-source={isAgentChat(record) ? 'agent' : 'model'} aria-label={isAgentChat(record) ? record.title + '，OpenCode 聊天' : record.title} title={record.title} className={`session-button ${chatKey(record) === props.selectedKey ? 'active' : ''}`} onClick={() => props.onOpen(record)}><MessageSquare size={12} aria-hidden="true" /><span className="session-button-copy">{record.title || '未命名聊天'}</span>{chatPreference(record, props.preferences).pinned && <Pin className="chat-pin" size={10} aria-label="已置顶" />}</button>
+      <button data-chat-source={isAgentChat(record) ? 'agent' : 'model'} aria-label={isAgentChat(record) ? record.title + '，' + (props.agentNames?.[record.source.agentID] ?? record.source.agentID) + ' 聊天' : record.title} title={record.title} className={`session-button ${chatKey(record) === props.selectedKey ? 'active' : ''}`} onClick={() => props.onOpen(record)}><MessageSquare size={12} aria-hidden="true" /><span className="session-button-copy">{record.title || '未命名聊天'}</span>{chatPreference(record, props.preferences).pinned && <Pin className="chat-pin" size={10} aria-label="已置顶" />}</button>
       <button className="icon-button chat-history-more" aria-label={`聊天选项：${record.title}`} aria-haspopup="menu" aria-expanded={!!menu && chatKey(menu.record) === chatKey(record)} disabled={props.disabled || !!operating} onClick={event => { const rect = event.currentTarget.getBoundingClientRect(); setError(''); setMenu({ record, trigger: event.currentTarget, left: Math.min(rect.left, window.innerWidth - 188), top: Math.min(rect.bottom + 4, window.innerHeight - 152) }); }}><MoreHorizontal size={14} /></button>
     </div>)}
     {!records.length && <p className="sidebar-empty">{archived ? '没有已归档的聊天' : '还没有聊天记录'}</p>}

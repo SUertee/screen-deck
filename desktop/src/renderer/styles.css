@@ -344,15 +344,8 @@ svg { flex: none; stroke-width: 1.65; }
 .bridge-error { height: 100%; display: flex; flex-direction: column; padding: 18px 24px; background: var(--page); }
 .bridge-error .empty { margin: auto; }
 .bridge-error .empty p { max-width: 430px; }
-.deck { color-scheme: dark; --page: #101010; --bg: #171717; --panel-2: #242424; --selected: #292929; --ink-1: #f2f2f2; --ink-2: #ababab; --ink-3: #ababab; --border: rgba(242,242,242,.1); --accent: #eeeeee; --on-accent: #171717; background: var(--page); color: var(--ink-1); height: 100%; display: flex; flex-direction: column; border-radius: 12px; padding: 18px; }
-.deck header { display: flex; align-items: center; gap: 12px; -webkit-app-region: drag; }
-.deck.mac header { padding-left: 60px; }
-.deck .brand { font-size: 13px; }
-.deck .brand-mark { width: 19px; height: 22px; }
-.deck-title { margin: 28px 0 10px; font-size: 17px; font-weight: 550; line-height: 1.5; overflow-wrap: anywhere; max-height: 52px; overflow-y: auto; flex: none; }
-.deck-status { display: grid; gap: 10px; font-size: 12px; color: var(--ink-2); flex: 1; min-height: 0; overflow-y: auto; align-content: start; }
-.deck-actions { display: flex; gap: 8px; margin-top: 20px; flex: none; }
-.deck-actions .button { flex: 1; }
+.local-plan-list { margin-bottom: 28px; }
+.local-plan-list h2 { margin: 0 0 12px; font-size: 13px; font-weight: 550; color: var(--ink-2); }
 .record-summary { white-space: pre-wrap; overflow-wrap: anywhere; }
 .plain-fieldset { border: 0; padding: 0; margin: 0; min-inline-size: 0; }
 .summary-expand, .collapsed-materials { margin-top: 8px; }

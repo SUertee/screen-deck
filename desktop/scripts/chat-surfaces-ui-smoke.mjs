@@ -93,7 +93,7 @@ try {
     const test = globalThis.__chatSurfaces = { ...data, counts: { network: 0, submissions: 0, starts: 0, created: 0, clipboardWrites: 0, nativeChoosers: 0, externalLinks: 0 }, clipboard: '', modelStops: [], agentStops: [] };
     const replace = (channel, operation) => { ipcMain.removeHandler('screendeck:' + channel); ipcMain.handle('screendeck:' + channel, operation); };
     replace('bootstrap', () => test.bootstrap); replace('get-settings', () => test.bootstrap.settings);
-    replace('agent-chat-sources', () => [{ agentID: 'opencode', name: 'OpenCode', state: 'unavailable', reason: 'stopped' }]);
+    replace('agent-chat-sources', () => [{ agentID: 'opencode', name: 'OpenCode', protocol: 'acp', capabilities: { streaming: true, nativeContext: true, interrupt: true, resume: false, tools: false, approvals: false, modelSelection: false }, state: 'unavailable', reason: 'stopped' }]);
     for (const channel of ['send-message', 'send-agent-message', 'request-execution-authorization', 'start-task-execution']) replace(channel, () => { test.counts.submissions++; throw new Error('No submission in surfaces smoke.'); });
     for (const channel of ['create-session', 'create-agent-session']) replace(channel, () => { test.counts.created++; throw new Error('No new record in surfaces smoke.'); });
     replace('start-opencode', () => { test.counts.starts++; throw new Error('No Agent runtime in surfaces smoke.'); });
@@ -168,11 +168,11 @@ try {
     await copy.click(); await expect(copy).toHaveAttribute('data-copy-state', 'success'); assert.equal((await state()).clipboard, userText);
   });
   await check('agent-source-and-draft-remain-separate-and-quote-does-not-restart-it', async () => {
-    await row(agent).click(); await expect(source()).toHaveValue('agent'); await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeDisabled();
+    await row(agent).click(); await expect(source()).toHaveValue('agent:opencode'); await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeDisabled();
     await composer().fill('Agent 原有草稿'); await quote(agent, 'user').click(); savedAgentDraft = await composer().inputValue();
     assert.ok(savedAgentDraft.startsWith('Agent 原有草稿')); assert.ok(savedAgentDraft.includes('>   用户第一行\n> \n> 第二行保留末尾空格  \n> '));
     await row(model).click(); await expect(composer()).toHaveValue('第一行\nx'); await expect(source()).toHaveValue('model');
-    await row(agent).click(); await expect(composer()).toHaveValue(savedAgentDraft); await expect(source()).toHaveValue('agent');
+    await row(agent).click(); await expect(composer()).toHaveValue(savedAgentDraft); await expect(source()).toHaveValue('agent:opencode');
     assert.equal((await state()).counts.starts, 0); assert.equal(await hash(agentFile), initialHashes[1]);
   });
   await check('streaming-and-cancelling-lock-source-and-route-stop-to-the-original-source', async () => {

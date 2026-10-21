@@ -58,7 +58,7 @@ try {
     await page.getByRole('button', { name: '打开 Deck', exact: true }).click();
     await expect.poll(() => application.windows().length).toBe(2);
     const deck = application.windows().find(window => window !== page);
-    await expect(deck.getByRole('heading', { name: record.title, exact: true })).toBeVisible();
+    await expect(deck.getByRole('heading', { name: '任务', exact: true })).toBeVisible();
     await deck.close();
     await page.screenshot({ path: path.join(screenshotRoot, 'chat-live.png') });
     await application.close(); application = undefined;

@@ -1,3 +1,4 @@
+import { TEXT_AGENT_CAPABILITIES } from '../../../shared/agent-capabilities.js';
 import { ExecutionError } from '../../sessions/execution-driver.js';
 import type { AgentChatDriver, AgentChatLookup, AgentChatRequest, AgentChatExecutionEvent } from '../../sessions/agent-chat-driver.js';
 import type { AgentChatReadySource } from '../../../shared/agent-chat.js';
@@ -9,13 +10,14 @@ const bounded = (value: unknown): value is string => typeof value === 'string' &
 
 /** Native-context text chat, independent of Task and task execution approvals. */
 export class OpenCodeAgentChatAdapter implements AgentChatDriver {
+  readonly descriptor = Object.freeze({ agentID: AGENT_ID, name: 'OpenCode', protocol: 'acp' as const, capabilities: TEXT_AGENT_CAPABILITIES });
   private readonly sessions: OpenCodeAcpSessionClient;
   constructor(private readonly options: OpenCodeAgentChatAdapterOptions) { this.sessions = new OpenCodeAcpSessionClient(options); }
   getSource(): AgentChatReadySource | undefined {
     try {
       if (this.options.canStart && !this.options.canStart()) return undefined;
       const connection = this.sessions.getConnection();
-      return { agentID: AGENT_ID, name: 'OpenCode', state: 'ready', configDigest: connection.configDigest, model: { ...connection.model }, runtimeID: connection.runtimeID, connectionGeneration: connection.connectionGeneration };
+      return { ...this.descriptor, state: 'ready', configDigest: connection.configDigest, model: { ...connection.model }, runtimeID: connection.runtimeID, connectionGeneration: connection.connectionGeneration };
     } catch { return undefined; }
   }
   async sendTurn(request: AgentChatRequest, onEvent: (event: AgentChatExecutionEvent) => Promise<void>, signal: AbortSignal): Promise<void> {

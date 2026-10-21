@@ -199,3 +199,23 @@ test('evicting terminal proof does not allow a continuous chat client request to
   for (let n = 0; n < 64; n++) await h.run(h.request(binding));
   await assert.rejects(h.run({ ...first, binding })); assert.equal(h.counts.prompts, 65); assert.equal(h.counts.sessions, 1); assert.equal(h.counts.loads, 0);
 });
+
+test('disconnect drains an in-flight message callback before rejecting the turn', { timeout: 5000 }, async t => {
+  const h = await fixture(t, 'hold');
+  const entered = deferred<void>(), release = deferred<void>();
+  let exited = false, writeCompleted = false;
+  const running = h.run(h.request(), async event => {
+    h.events.push(event);
+    if (event.type === 'text-delta') { entered.resolve(); await release.promise; writeCompleted = true; }
+  });
+  const rejected = assert.rejects(running).then(() => { exited = true; });
+  await entered.promise;
+  h.rpc.close();
+  await new Promise(resolve => setTimeout(resolve, 30));
+  const returnedBeforeWrite = exited;
+  release.resolve();
+  await rejected;
+  assert.equal(returnedBeforeWrite, false, 'Caller must not save unknown while an older streaming write is still active.');
+  assert.equal(writeCompleted, true);
+  assert.equal(h.counts.prompts, 1);
+});

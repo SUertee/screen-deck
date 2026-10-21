@@ -1,3 +1,5 @@
+import { AgentChatRegistry } from '../../src/core/agents/agent-chat-registry.js';
+import { TEXT_AGENT_CAPABILITIES } from '../../src/shared/agent-capabilities.js';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, readdir, realpath, symlink, writeFile } from 'node:fs/promises';
@@ -19,7 +21,7 @@ import { TaskSessionHistoryStore } from '../../src/core/sessions/task-session-hi
 import { TaskDriverFixture } from '../helpers/task-driver-fixture.js';
 
 const date = '2026-10-14T00:00:00.000Z';
-const source = (): AgentChatReadySource => ({ agentID: 'opencode', name: 'OpenCode', state: 'ready', configDigest: 'a'.repeat(64), runtimeID: randomUUID(), connectionGeneration: randomUUID(), model: { provider_id: 'fixture', model_id: 'fixture-model' } });
+const source = (): AgentChatReadySource => ({ agentID: 'opencode', name: 'OpenCode', protocol: 'acp', capabilities: TEXT_AGENT_CAPABILITIES, state: 'ready', configDigest: 'a'.repeat(64), runtimeID: randomUUID(), connectionGeneration: randomUUID(), model: { provider_id: 'fixture', model_id: 'fixture-model' } });
 const deferred = () => {
   let resolve!: () => void;
   const promise = new Promise<void>(done => { resolve = done; });
@@ -49,6 +51,7 @@ class MemoryStore implements AgentSessionHistoryStoring {
 }
 type Body = (request: AgentChatRequest, emit: (event: AgentChatExecutionEvent) => Promise<void>, signal: AbortSignal) => Promise<void>;
 class AgentFixture implements AgentChatDriver {
+  readonly descriptor = { agentID: 'opencode', name: 'OpenCode', protocol: 'acp' as const, capabilities: TEXT_AGENT_CAPABILITIES };
   source: AgentChatReadySource | undefined = source();
   readonly requests: AgentChatRequest[] = [];
   readonly cancellations: AgentChatLookup[] = [];
@@ -79,7 +82,7 @@ class AgentFixture implements AgentChatDriver {
   }
 }
 function fixture(store = new MemoryStore(), driver = new AgentFixture()) {
-  return { store, driver, lifecycle: new AgentSessionLifecycle(store, driver, () => new Date(date), 0) };
+  return { store, driver, lifecycle: new AgentSessionLifecycle(store, new AgentChatRegistry([{ driver }]), () => new Date(date), 0) };
 }
 const create = (lifecycle: AgentSessionLifecycle) => lifecycle.create({ title: 'Agent fixture', agentID: 'opencode' });
 const temp = async () => mkdtemp(join(await realpath(tmpdir()), 'screendeck-agent-chat-test-'));
@@ -247,7 +250,7 @@ test('Restart turns active submission unknown; finished history stays readable b
   const interrupted = structuredClone(finished.session);
   interrupted.turns[0]!.state = 'submitting';
   store.records.set(session.conversation_id, interrupted);
-  const restarted = new AgentSessionLifecycle(store, driver, () => new Date(date));
+  const restarted = new AgentSessionLifecycle(store, new AgentChatRegistry([{ driver }]), () => new Date(date));
   assert.equal((await restarted.load(session.conversation_id))?.turns[0]?.state, 'unknown');
   await assert.rejects(restarted.send({ sessionID: session.conversation_id, text: 'no replay' }), /结果未知/);
   assert.equal(driver.prompts, 1);
@@ -255,7 +258,7 @@ test('Restart turns active submission unknown; finished history stays readable b
   const otherSession = await create(another.lifecycle);
   const otherFinished = await another.lifecycle.send({ sessionID: otherSession.conversation_id, text: 'done' });
   another.driver.source!.connectionGeneration = randomUUID();
-  const nextApp = new AgentSessionLifecycle(another.store, another.driver);
+  const nextApp = new AgentSessionLifecycle(another.store, new AgentChatRegistry([{ driver: another.driver }]));
   assert.deepEqual((await nextApp.load(otherSession.conversation_id))?.binding, otherFinished.session.binding);
   await assert.rejects(nextApp.send({ sessionID: otherSession.conversation_id, text: 'do not bind' }), /不会重新绑定/);
   assert.equal(another.driver.sessions, 1);
@@ -270,7 +273,7 @@ test('Restart closes an unsubmitted prepared turn locally without claiming cance
   interrupted.turns[0]!.state = 'prepared';
   interrupted.revision = 2;
   store.records.set(session.conversation_id, interrupted);
-  const nextApp = new AgentSessionLifecycle(store, driver);
+  const nextApp = new AgentSessionLifecycle(store, new AgentChatRegistry([{ driver }]));
   assert.equal((await nextApp.load(session.conversation_id))?.turns[0]?.state, 'failed');
   assert.equal(driver.prompts, 0);
 });
@@ -294,7 +297,7 @@ test('Agent storage is a separate strict flat format and cannot mutate source, b
   const root = await temp();
   const store = new AgentSessionHistoryStore(root);
   const driver = new AgentFixture();
-  const lifecycle = new AgentSessionLifecycle(store, driver, () => new Date(date), 0);
+  const lifecycle = new AgentSessionLifecycle(store, new AgentChatRegistry([{ driver }]), () => new Date(date), 0);
   const session = await create(lifecycle);
   const finished = (await lifecycle.send({ sessionID: session.conversation_id, text: 'frozen' })).session;
   const file = join(root, 'agent-sessions-v1', `${session.conversation_id}.json`);
@@ -351,7 +354,7 @@ test('Cross-format chat/task conflicts refuse Agent reads and preserve all origi
     assert.equal((await store.list()).records.length, 0);
     await assert.rejects(store.save({ ...agent, title: 'must not write' }, agent.revision), /不同格式/);
     assert.deepEqual(await readFile(agentFile), agentBytes);
-    const manager = new SessionManager({ store: new SessionHistoryStore(join(root, 'sessions')), driver: { capabilities: { chat: true, tools: false, remoteSessions: false, remoteAbort: false }, async execute() { throw new Error('must not send'); } }, agent: { store, driver: new AgentFixture() }, task: { store: new TaskSessionHistoryStore(root), driver: new TaskDriverFixture() } });
+    const manager = new SessionManager({ store: new SessionHistoryStore(join(root, 'sessions')), driver: { capabilities: { chat: true, tools: false, remoteSessions: false, remoteAbort: false }, async execute() { throw new Error('must not send'); } }, agent: { store, drivers: new AgentChatRegistry([{ driver: new AgentFixture() }]) }, task: { store: new TaskSessionHistoryStore(root), driver: new TaskDriverFixture() } });
     if (format === 'chat') await assert.rejects(manager.loadSession(record.conversation_id), /不同格式/);
     else {
       const listing = await manager.listTaskSessions();
@@ -369,7 +372,7 @@ test('Facade routes Agent events and keeps old ordinary chat JSON unchanged', as
   const chat = await chatStore.save(chatRecord(emptyRecord()));
   const original = await readFile(join(root, 'sessions', '2026', '10', '14', `${chat.conversation_id}.json`));
   const driver = new AgentFixture();
-  const manager = new SessionManager({ store: chatStore, driver: { capabilities: { chat: true, tools: false, remoteSessions: false, remoteAbort: false }, async execute() {} }, agent: { store: new AgentSessionHistoryStore(root), driver } });
+  const manager = new SessionManager({ store: chatStore, driver: { capabilities: { chat: true, tools: false, remoteSessions: false, remoteAbort: false }, async execute() {} }, agent: { store: new AgentSessionHistoryStore(root), drivers: new AgentChatRegistry([{ driver }]) } });
   const events: string[] = [];
   const unsubscribe = manager.subscribeAgent(event => { events.push(event.type); });
   const agent = await manager.createAgentSession({ title: 'separate', agentID: 'opencode' });
@@ -487,7 +490,7 @@ test('Concurrent list/load recovery shares one local write and does not create a
   const entered = deferred(); const release = deferred();
   const before = store.saves;
   store.beforeSave = async () => { entered.resolve(); await release.promise; };
-  const nextApp = new AgentSessionLifecycle(store, driver);
+  const nextApp = new AgentSessionLifecycle(store, new AgentChatRegistry([{ driver }]));
   const listing = nextApp.list();
   const loading = nextApp.load(session.conversation_id);
   await entered.promise;

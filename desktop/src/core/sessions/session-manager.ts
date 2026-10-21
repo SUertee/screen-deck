@@ -10,7 +10,7 @@ import type { TaskSessionHistoryStoring } from './task-session-history-store.js'
 import type { TaskExecutionDriver } from './task-execution-driver.js';
 import { TaskSessionLifecycle } from './task-session-lifecycle.js';
 import type { AgentSessionHistoryStoring } from './agent-session-history-store.js';
-import type { AgentChatDriver } from './agent-chat-driver.js';
+import type { AgentChatDriverResolver } from './agent-chat-driver.js';
 import { AgentSessionLifecycle } from './agent-session-lifecycle.js';
 
 const terminal = new Set(['finished', 'failed', 'cancelled']);
@@ -36,7 +36,7 @@ export interface SessionManagerOptions {
   persistIntervalMs?: number;
   file?: FileTaskOptions;
   task?: { store: TaskSessionHistoryStoring; driver: TaskExecutionDriver; resolveApproval?: (id: string) => Promise<ApprovalRequest | undefined> };
-  agent?: { store: AgentSessionHistoryStoring; driver: AgentChatDriver };
+  agent?: { store: AgentSessionHistoryStoring; drivers: AgentChatDriverResolver };
 }
 
 /** Owns local turn state. Drivers cannot authorize tools, edit plans, or own this history. */
@@ -69,7 +69,7 @@ export class SessionManager {
         },
       }, options.task.driver, options.now, options.task.resolveApproval);
     }
-    if (options.agent) this.agentLifecycle = new AgentSessionLifecycle(options.agent.store, options.agent.driver, options.now, options.persistIntervalMs);
+    if (options.agent) this.agentLifecycle = new AgentSessionLifecycle(options.agent.store, options.agent.drivers, options.now, options.persistIntervalMs);
   }
 
   createFileTaskSession(input: Parameters<FileTaskLifecycle['create']>[0]) { this.ensureOpen(); return this.files().create(input); }

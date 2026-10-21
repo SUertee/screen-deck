@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Terminal } from 'lucide-react';
+import { RefreshCw, Terminal } from 'lucide-react';
 import type { DesktopAPI, OpenCodeBinaryCandidate, OpenCodeInstallation, OpenCodeStatus } from '../shared/desktop-api';
 import { Notice } from './components';
+import { AgentSettingsCard } from './AgentSettingsCard';
 
 const SUPPORTED_VERSION = '1.19.0';
 type RuntimeOperation = 'start' | 'stop' | 'refresh' | 'choose' | 'guide';
@@ -109,50 +110,27 @@ export function OpenCodeSettings({ api, settingsDirty, onEditModel }: OpenCodeSe
   const ready = status?.state === 'ready';
   const selected = installation.candidates.find(candidate => candidate.id === selectedID);
   const state = busy ? 'loading' : !runtimeConfirmed ? 'error' : ready ? status.requiresRestart ? 'requires-restart' : 'ready' : error ? 'error' : 'stopped';
-  const statusText = operation === 'start' ? '正在连接…' : operation === 'stop' ? '正在关闭…'
-    : busy ? operation === 'choose' ? '正在选择程序…' : operation === 'guide' ? '正在打开安装说明…' : '读取状态…'
-    : !runtimeConfirmed ? '状态未确认，请刷新重试。'
-    : ready ? `已连接 ${status.version} · ${status.model.model_id} · ACP · 无工具`
-    : '未启动';
-
-  return (
-    <section aria-label="OpenCode 执行器" data-testid="opencode-runtime-card" data-state={state} aria-busy={busy}>
-      <div className="settings-tool-row">
-        <div className="settings-tool-info">
-          <div className="settings-tool-heading"><Terminal size={20} aria-hidden="true" /><strong>OpenCode</strong></div>
-          <p className="field-help" role="status" data-testid="opencode-runtime-status">{statusText}</p>
-        </div>
-        <div className="settings-tool-actions">
-          {ready ? <button className="button ghost opencode-connect" data-testid="opencode-runtime-stop" type="button" disabled={busy} onClick={close}>{operation === 'stop' ? '正在关闭…' : '关闭执行器'}</button>
-            : <button className="button opencode-connect" data-testid="opencode-runtime-start" type="button" disabled={busy || settingsDirty || !runtimeConfirmed || !installationConfirmed || !status || !selected} onClick={connect}>{operation === 'start' ? '正在连接…' : '连接 OpenCode'}</button>}
-          <button className="button ghost" data-testid="opencode-runtime-refresh" type="button" disabled={busy} onClick={() => void change('refresh', epoch => read(epoch))}>{operation === 'refresh' ? '正在刷新…' : '刷新状态'}</button>
-        </div>
-      </div>
-
-      <div className="opencode-discovery" data-testid="opencode-installation" data-state={busy ? 'loading' : !installationConfirmed ? 'error' : ready ? 'ready' : installation.candidates.length ? 'found' : 'missing'}>
-        <p className="field-help opencode-installation-status" role="status" data-testid="opencode-installation-status">{busy ? '正在检测程序位置…' : !installationConfirmed ? '程序位置未确认，请刷新重试。' : ready ? '程序位置已确认' : installation.candidates.length ? '已找到，尚未连接' : '未检测到 OpenCode'}</p>
-        {installation.candidates.length > 1 ? <label className="opencode-installation-label">程序位置<select className="opencode-candidate-select" aria-label="OpenCode 安装位置" value={selectedID} disabled={busy || ready} onChange={event => setSelectedID(event.target.value)}>
-          <option value="" disabled>请选择安装位置</option>
-          {installation.candidates.map(candidate => <option key={candidate.id} value={candidate.id}>{sourceLabels[candidate.source]} · {shortPath(candidate.path)}</option>)}
-        </select></label> : selected ? <div className="opencode-installation-location"><span className="field-help">{sourceLabels[selected.source]}</span><span className="opencode-installation-path" data-testid="opencode-installation-path" title={selected.path}>{selected.path}</span></div> : null}
-        {installation.candidates.length > 1 && selected && <span className="opencode-installation-path" data-testid="opencode-installation-path" title={selected.path}>{selected.path}</span>}
-        {!loading && installationConfirmed && !ready && !installation.candidates.length && <p className="field-help">请先安装 OpenCode {SUPPORTED_VERSION}。已安装时可手动指定程序。</p>}
-        <div className="opencode-discovery-actions">
-          <button className="button ghost" data-testid="opencode-binary-choose" type="button" disabled={busy || ready} onClick={choose}>{operation === 'choose' ? '正在选择…' : '手动选择程序'}</button>
-          {!ready && !installation.candidates.length && <button className="button ghost" data-testid="opencode-install-guide" type="button" disabled={busy} onClick={() => void change('guide', async () => { await api.openOpenCodeInstallGuide(); })}>安装说明</button>}
-        </div>
-      </div>
-
-      <dl className="settings-tool-details">
-        <dt>{ready ? '连接版本' : '支持版本'}</dt><dd title={ready ? undefined : '连接时核验此版本；发现程序位置不表示版本已通过核验。'}>{ready ? status.version : SUPPORTED_VERSION}</dd>
-        <dt>接入协议</dt><dd>ACP v1</dd>
-        <dt>模型来源</dt><dd>连接时使用已保存的模型服务配置。</dd>
-        <dt>{ready ? '已绑定模型' : '实际模型'}</dt><dd>{ready ? `${status.model.provider_id}/${status.model.model_id}` : '连接后显示本次使用的模型。'}</dd>
-        <dt>开放能力</dt><dd title="不读取关联项目文件，不附加材料，不执行文件或命令工具。">无工具文本</dd>
-      </dl>
-      {ready && status.requiresRestart && <p className="field-help" role="status">模型连接已更新；关闭并重新连接后可发送新消息。已提交的尝试仍绑定原连接。</p>}
-      {settingsDirty && <div className="settings-tool-model-warning"><p className="field-help">模型服务有未保存修改，请先保存后再连接。关闭执行器和刷新状态仍可操作。</p>{onEditModel && <button className="button ghost" data-testid="settings-edit-model" type="button" onClick={onEditModel}>回到模型服务</button>}</div>}
-      {error && <div className="settings-feedback"><Notice>{error}</Notice></div>}
-    </section>
-  );
+  const statusText = operation === 'start' ? '连接中' : operation === 'stop' ? '断开中' : busy ? '读取中' : !runtimeConfirmed ? '待确认' : ready ? status.requiresRestart ? '需重连' : '已连接' : '未连接';
+  const missing = installationConfirmed && !installation.candidates.length && !ready;
+  const discovery = <div className="agent-program-location" data-testid="opencode-installation" data-state={busy ? 'loading' : !installationConfirmed ? 'error' : ready ? 'ready' : installation.candidates.length ? 'found' : 'missing'}>
+    <span className="agent-settings-secondary" role="status" data-testid="opencode-installation-status">{busy ? '正在检测程序位置…' : !installationConfirmed ? '程序位置未确认，请刷新重试。' : ready ? '程序位置已确认' : installation.candidates.length ? '已找到，尚未连接' : '未检测到 OpenCode'}</span>
+    {installation.candidates.length > 1 ? <label className="agent-program-picker">程序位置<select aria-label="OpenCode 安装位置" value={selectedID} disabled={busy || ready} onChange={event => setSelectedID(event.target.value)}>
+      <option value="" disabled>请选择安装位置</option>{installation.candidates.map(candidate => <option key={candidate.id} value={candidate.id}>{sourceLabels[candidate.source]} · {shortPath(candidate.path)}</option>)}
+    </select></label> : null}
+    {selected && <code className="agent-program-path" data-testid="opencode-installation-path" title={selected.path}>{selected.path}</code>}
+    <div className="agent-program-actions"><button className="button ghost" data-testid="opencode-binary-choose" type="button" disabled={busy || ready} onClick={choose}>{operation === 'choose' ? '正在选择…' : '手动选择程序'}</button>
+      {missing && <button className="button ghost" data-testid="opencode-install-guide" type="button" disabled={busy} onClick={() => void change('guide', async () => { await api.openOpenCodeInstallGuide(); })}>安装说明</button>}</div>
+  </div>;
+  return <AgentSettingsCard name="OpenCode" icon={<Terminal size={19} />} state={state} status={statusText} statusTestID="opencode-runtime-status" subtitle={ready ? status.model.model_id : '使用模型服务中的配置'} busy={busy} testID="opencode-runtime-card" actions={<>
+    <button className="icon-button agent-settings-refresh" data-testid="opencode-runtime-refresh" title="刷新 OpenCode 状态" aria-label="刷新 OpenCode 状态" type="button" disabled={busy} onClick={() => void change('refresh', epoch => read(epoch))}><RefreshCw size={14} /></button>
+    {ready ? <button className="button ghost" data-testid="opencode-runtime-stop" type="button" disabled={busy} onClick={close}>{operation === 'stop' ? '断开中…' : '断开连接'}</button> : <button className="button primary" data-testid="opencode-runtime-start" type="button" disabled={busy || settingsDirty || !runtimeConfirmed || !installationConfirmed || !status || !selected} title={missing ? '请先安装或选择 OpenCode 程序' : undefined} onClick={connect}>{operation === 'start' ? '连接中…' : '连接 OpenCode'}</button>}
+  </>} details={<>
+    {!missing && discovery}
+    <dl className="agent-settings-facts"><dt>{ready ? '连接版本' : '支持版本'}</dt><dd>{ready ? status.version : SUPPORTED_VERSION}</dd><dt>接入协议</dt><dd>ACP v1</dd><dt>模型来源</dt><dd>模型服务配置</dd>{ready && <><dt>已绑定模型</dt><dd>{status.model.provider_id}/{status.model.model_id}</dd></>}<dt>工具能力</dt><dd>原生文件、命令和审批；工作项为受限文本。</dd><dt>执行限制</dt><dd>OpenCode 原生权限，没有 OS 沙箱。工作目录不等于文件隔离。</dd></dl>
+  </>}>
+    {missing && discovery}
+    {ready && status.requiresRestart && <p className="agent-settings-inline-note" role="status">模型配置已更新，请断开后重新连接。</p>}
+    {settingsDirty && <div className="agent-settings-inline-note"><span>模型服务有未保存修改。</span>{onEditModel && <button className="button ghost" data-testid="settings-edit-model" type="button" onClick={onEditModel}>回到模型服务</button>}</div>}
+    {error && <div className="settings-feedback"><Notice>{error}</Notice></div>}
+  </AgentSettingsCard>;
 }

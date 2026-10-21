@@ -1,0 +1,63 @@
+import { _electron as electron, expect } from '@playwright/test';
+import { mkdtemp, mkdir, writeFile, readFile, chmod, realpath } from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
+import assert from 'node:assert/strict';
+const root = process.cwd(), temp = await mkdtemp(path.join(await realpath(os.tmpdir()), 'screendeck-codex-ui-'));
+for (const dir of ['bin', 'home', 'tmp', 'workspace']) await mkdir(path.join(temp, dir));
+const binary = path.join(temp, 'bin/codex');
+await writeFile(binary, '#!'+process.execPath+'\n'+await readFile(path.join(root,'tests/helpers/codex-native-ui-peer.mjs'),'utf8')); await chmod(binary,0o700);
+const env = { HOME: path.join(temp, 'home'), TMPDIR: path.join(temp, 'tmp'), PATH: [path.join(temp, 'bin'), path.dirname(process.execPath), '/usr/bin', '/bin', '/usr/sbin', '/sbin'].join(path.delimiter), SCREENDECK_PREVIEW_ROOT: path.join(temp, 'preview'), SCREENDECK_PROJECT_HISTORY_ROOT: path.join(temp, 'project-history') };
+for (const key of ['LANG', 'USER', 'LOGNAME', 'DISPLAY', 'XAUTHORITY']) if (process.env[key]) env[key] = process.env[key];
+const artifacts = path.join(root, 'artifacts/native-agent-ui-smoke'); await mkdir(artifacts, { recursive: true });
+let app; const checks = [], errors = [];
+const check = async (name, fn) => { await fn(); checks.push(name); console.log('PASS '+name); };
+try {
+ app = await electron.launch({ args: [root], env, timeout: 30000 }); await expect.poll(() => app.windows().some(page => page.url().startsWith('screendeck-app:') && !page.url().includes('deck=1'))).toBe(true); const page = app.windows().find(page => page.url().startsWith('screendeck-app:') && !page.url().includes('deck=1')); page.setDefaultTimeout(10000); page.on('pageerror', e => errors.push(e.message));
+ await app.evaluate(({ shell, dialog }, workspace) => { dialog.showOpenDialog=async()=>({canceled:false,filePaths:[workspace]}); globalThis.__codexOpened=[]; shell.openExternal=async url=>{globalThis.__codexOpened.push(url);}; },path.join(temp,'workspace'));
+ const input=page.getByRole('textbox',{name:'输入消息',exact:true}), source=page.getByRole('combobox',{name:'聊天来源',exact:true});
+ await expect(input).toBeVisible(); await source.selectOption('agent:codex'); await page.getByRole('button',{name:'Agent 设置',exact:true}).click();await page.getByRole('tab',{name:'Codex',exact:true}).click();
+ const card=page.getByTestId('codex-runtime-card');
+ await check('source-selection-and-settings-do-not-start-or-login',async()=>{await expect(card).toContainText('未连接');assert.deepEqual(await page.evaluate(()=>window.screendeck.getCodexStatus()),{state:'stopped'});assert.equal((await app.evaluate(()=>globalThis.__codexOpened)).length,0);});
+ await check('explicit-connect-and-browser-login-update-source-without-provider-key',async()=>{await card.getByRole('button',{name:'连接 Codex',exact:true}).click();await expect(card.getByRole('button',{name:'使用 ChatGPT 登录',exact:true})).toBeVisible();await card.getByRole('button',{name:'使用 ChatGPT 登录',exact:true}).click();await expect(card).toContainText('fixture@example.invalid');assert.equal((await app.evaluate(()=>globalThis.__codexOpened)).length,1);const data=await page.evaluate(()=>window.screendeck.getAgentSources());assert.equal(data.find(s=>s.agentID==='codex').state,'ready');});
+ await page.screenshot({path:path.join(artifacts,'codex-settings.png')});
+ await page.getByRole('dialog',{name:'设置',exact:true}).getByRole('button',{name:'关闭',exact:true}).click();
+ await check('chat-without-project-or-directory-uses-one-restricted-thread-and-one-login',async()=>{
+   await expect(page.getByRole('button',{name:'发送消息',exact:true})).toBeDisabled();
+   for(let n=1;n<=2;n++){await input.fill('纯聊天 '+n);await expect(page.getByRole('button',{name:'发送消息',exact:true})).toBeEnabled();await page.getByRole('button',{name:'发送消息',exact:true}).click();await expect(page.getByText('Codex 纯聊天回复 '+n,{exact:true})).toBeVisible();await expect(input).toHaveValue('');}
+   await expect(page.getByRole('button',{name:'纯聊天',exact:true})).toBeVisible();await expect(page.getByRole('button',{name:'批准这一次',exact:true})).toHaveCount(0);
+   const calls=(await readFile(path.join(temp,'preview/codex/home/fixture-requests.jsonl'),'utf8')).trim().split('\n').map(JSON.parse);
+   assert.equal(calls.filter(q=>q.method==='account/login/start').length,1);assert.equal(calls.filter(q=>q.method==='thread/start').length,1);assert.equal(calls.find(q=>q.method==='thread/start').params.cwd,path.join(temp,'preview/codex/text-profile/workspace'));
+   assert.equal((await app.evaluate(()=>globalThis.__codexOpened)).length,1);await page.screenshot({path:path.join(artifacts,'plain-chat-no-directory.png')});
+ });
+ await page.getByRole('button',{name:'新聊天',exact:true}).click();
+ await page.getByRole('button',{name:'选择工作目录',exact:true}).click();
+ await page.getByRole('button',{name:'Agent 权限',exact:true}).click();await page.getByRole('menuitemradio',{name:'自动编辑',exact:true}).click();
+ await page.getByRole('button',{name:'移除工作目录',exact:true}).click();await expect(page.getByRole('button',{name:'Agent 权限',exact:true})).toHaveCount(0);await page.getByRole('button',{name:'选择工作目录',exact:true}).click();
+ await check('permission-menu-matches-app-and-supports-keyboard-and-narrow-window',async()=>{
+   const trigger=page.getByRole('button',{name:'Agent 权限',exact:true});
+   await expect(trigger).toContainText('变更前确认');
+   await trigger.focus(); await page.keyboard.press('ArrowDown');
+   const menu=page.getByRole('menu',{name:'Agent 权限选择',exact:true});
+   await expect(menu).toBeVisible(); await expect(page.getByRole('menuitemradio',{name:'变更前确认',exact:true})).toBeFocused();
+   assert.equal(await menu.locator('select').count(),0);await expect(menu.getByRole('menuitemradio')).toHaveCount(3);await expect(menu.getByRole('menuitemradio',{name:'只读',exact:true})).toHaveCount(0);
+   await page.keyboard.press('End'); await expect(page.getByRole('menuitem',{name:'权限详情',exact:true})).toBeFocused();
+   await page.keyboard.press('Home'); await expect(page.getByRole('menuitemradio',{name:'变更前确认',exact:true})).toBeFocused();
+   await page.keyboard.press('Escape'); await expect(menu).toHaveCount(0); await expect(trigger).toBeFocused();
+   await trigger.click(); await page.mouse.click(700,180); await expect(menu).toHaveCount(0);
+   await page.setViewportSize({width:680,height:760}); await page.emulateMedia({reducedMotion:'reduce'});
+   await trigger.click(); await expect(menu).toBeVisible();
+   const box=await menu.boundingBox();assert(box.x>=8&&box.x+box.width<=672&&box.y>=8&&box.y+box.height<=760);
+   assert.equal(await menu.evaluate(el=>el.parentElement===document.body),true);
+   await page.screenshot({path:path.join(artifacts,'permission-menu-narrow.png')});
+   await page.keyboard.press('Escape'); await page.setViewportSize({width:1440,height:940});
+   await trigger.click(); await page.screenshot({path:path.join(artifacts,'permission-menu.png')});
+   await page.getByRole('menuitemradio',{name:'变更前确认',exact:true}).click();
+   await expect(trigger).toContainText('变更前确认'); await expect(trigger).toBeFocused();
+ });
+ await check('two-turn-chat-reuses-one-native-thread-and-clears-input',async()=>{for(let n=1;n<=2;n++){await input.fill('合成输入 '+n);await page.getByRole('button',{name:'发送消息',exact:true}).click();await expect(input).toHaveValue(''); const approve=page.getByRole('button',{name:'批准这一次',exact:true}); await expect(approve).toBeVisible(); await assert.rejects(readFile(path.join(temp,'workspace','approved-'+n+'.txt'))); if(n===1) { await page.screenshot({path:path.join(artifacts,'pending-approval.png')}); await approve.click(); } else await page.getByRole('button',{name:'拒绝',exact:true}).click(); await expect(page.getByText('Codex 合成回复 '+n,{exact:true})).toBeVisible();}assert.equal(await readFile(path.join(temp,'workspace','approved-1.txt'),'utf8'),'synthetic-ui-write'); await assert.rejects(readFile(path.join(temp,'workspace','approved-2.txt'))); const calls=(await readFile(path.join(temp,'preview/codex/home/fixture-requests.jsonl'),'utf8')).trim().split('\n').map(JSON.parse);assert.equal(calls.filter(q=>q.method==='thread/start'&&q.params.cwd===path.join(temp,'workspace')).length,1);assert.deepEqual(calls.filter(q=>q.method==='turn/start'&&q.params.threadId==='native-thread').map(q=>q.params.input[0].text),['合成输入 1','合成输入 2']);});
+ await check('stop-expires-the-pending-approval-without-writing',async()=>{await input.fill('合成取消输入');await page.getByRole('button',{name:'发送消息',exact:true}).click();await expect(page.getByRole('button',{name:'批准这一次',exact:true})).toBeVisible();await page.getByRole('button',{name:'停止生成',exact:true}).click();await expect(page.getByRole('button',{name:'批准这一次',exact:true})).toHaveCount(0);await expect(page.getByText('申请已失效',{exact:true})).toBeVisible();await assert.rejects(readFile(path.join(temp,'workspace','approved-3.txt')));});
+ await check('disconnect-preserves-history-and-blocks-old-binding',async()=>{await page.getByRole('button',{name:'Agent 设置',exact:true}).click();await page.getByRole('tab',{name:'Codex',exact:true}).click();await card.getByRole('button',{name:'断开连接',exact:true}).click();await expect(card).toContainText('未连接');await page.getByRole('dialog',{name:'设置',exact:true}).getByRole('button',{name:'关闭',exact:true}).click();await expect(page.getByText('Codex 合成回复 2',{exact:true})).toBeVisible();await input.fill('不能发送');await expect(page.getByRole('button',{name:'发送消息',exact:true})).toBeDisabled();});
+ await check('narrow-settings-remain-within-viewport-and-keyboard-operable',async()=>{await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setContentSize(680,820));await page.getByRole('button',{name:'Agent 设置',exact:true}).click();await page.getByRole('tab',{name:'Codex',exact:true}).click();await card.scrollIntoViewIfNeeded();assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));await card.getByRole('button',{name:'连接 Codex',exact:true}).focus();await expect(card.getByRole('button',{name:'连接 Codex',exact:true})).toBeFocused();await page.screenshot({path:path.join(artifacts,'codex-settings-narrow.png')});});
+ assert.deepEqual(errors,[]);await writeFile(path.join(artifacts,'report.json'),JSON.stringify({checks,errors,temp},null,2));
+}finally{await app?.close();}

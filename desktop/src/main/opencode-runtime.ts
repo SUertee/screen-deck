@@ -6,7 +6,7 @@ import path from 'node:path';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { Readable, Writable } from 'node:stream';
-import { client, ndJsonStream, RequestError, type ClientConnection, type SessionNotification, type RequestPermissionRequest, type AnyMessage } from '@agentclientprotocol/sdk';
+import { client, ndJsonStream, RequestError, type ClientConnection, type SessionNotification, type RequestPermissionRequest, type RequestPermissionResponse, type AnyMessage } from '@agentclientprotocol/sdk';
 import type { OpenCodeConnection } from '../core/agents/opencode/opencode-adapter.js';
 import type { OpenCodeAcpConnection, OpenCodeAcpEvent } from '../core/agents/opencode/opencode-acp-connection.js';
 export type { OpenCodeConnection } from '../core/agents/opencode/opencode-adapter.js';
@@ -22,7 +22,7 @@ export interface OpenCodeStartInput {
   /** Only an explicitly enabled loopback fixture may use HTTP. */
   allowLocalProvider?: boolean;
 }
-interface RuntimeOptions { root?: string; startTimeoutMs?: number; shutdownTimeoutMs?: number }
+interface RuntimeOptions { nativeTools?: boolean; root?: string; startTimeoutMs?: number; shutdownTimeoutMs?: number }
 interface LogSink { directory: string; file: string; directoryID: string; linkID: string; deviceID: string }
 interface OwnedProcess {
   child: ChildProcess;
@@ -81,23 +81,23 @@ async function rejectManagedConfiguration(): Promise<void> {
   }
 }
 
-function controlledConfig(input: OpenCodeStartInput, disableTitle = false) {
+function controlledConfig(input: OpenCodeStartInput, disableTitle = false, nativeTools = false) {
   return {
     username: 'ScreenDeck', model: `${PROVIDER_ID}/${input.provider.modelID}`, small_model: `${PROVIDER_ID}/${input.provider.modelID}`,
     enabled_providers: [PROVIDER_ID], plugin: [], mcp: {}, instructions: [], skills: { paths: [], urls: [] },
-    permission: { '*': 'deny' }, agent: { build: { permission: { '*': 'deny' } }, ...(disableTitle ? { title: { disable: true } } : {}) },
+    permission: nativeTools ? { '*': 'ask', read: 'allow', glob: 'allow', grep: 'allow', list: 'allow', external_directory: 'ask' } : { '*': 'deny' }, agent: { build: { permission: nativeTools ? { '*': 'ask', read: 'allow', glob: 'allow', grep: 'allow', list: 'allow', external_directory: 'ask' } : { '*': 'deny' } }, ...(disableTitle ? { title: { disable: true } } : {}) },
     share: 'disabled', autoupdate: false, compaction: { auto: false, prune: false }, lsp: false, formatter: false,
     provider: { [PROVIDER_ID]: {
       npm: SDK, name: 'ScreenDeck', api: input.provider.baseURL,
       options: { baseURL: input.provider.baseURL, apiKey: '{env:SCREENDECK_LLM_API_KEY}' },
-      models: { [input.provider.modelID]: { id: input.provider.modelID, name: input.provider.modelID, tool_call: false, modalities: { input: ['text'], output: ['text'] }, limit: { context: 16_384, output: 4096 } } },
+      models: { [input.provider.modelID]: { id: input.provider.modelID, name: input.provider.modelID, tool_call: nativeTools, modalities: { input: ['text'], output: ['text'] }, limit: { context: 16_384, output: 4096 } } },
     } },
   };
 }
 
 /** Both transports must prove the same fixed effective policy before publishing. */
-function inspectConfig(value: unknown, input: OpenCodeStartInput, acp = false): void {
-  const cfg = object(value), expected = controlledConfig(input, acp);
+function inspectConfig(value: unknown, input: OpenCodeStartInput, acp = false, nativeTools = false): void {
+  const cfg = object(value), expected = controlledConfig(input, acp, nativeTools);
   const keys = new Set([...Object.keys(expected), 'mode', 'command', '$schema']);
   const agents = object(cfg.agent), build = object(agents.build);
   // ConfigAgentV1.normalize adds empty options and permission even to disable:true.
@@ -211,7 +211,7 @@ async function prepareLogSink(data: string): Promise<LogSink> {
   } catch { return fail('runtime-log-sink', '无法建立执行器的受控日志出口，本版不开放该连接。'); }
 }
 
-async function environment(root: string, input: OpenCodeStartInput, password: string, disableTitle = false): Promise<{ env: NodeJS.ProcessEnv; logSink: LogSink }> {
+async function environment(root: string, input: OpenCodeStartInput, password: string, disableTitle = false, nativeTools = false): Promise<{ env: NodeJS.ProcessEnv; logSink: LogSink }> {
   const directories = Object.fromEntries(['home', 'data', 'cache', 'config', 'state', 'tmp', 'managed', 'directory'].map(name => [name, path.join(root, name)]));
   await Promise.all(Object.values(directories).map(directory => mkdir(directory, { mode: 0o700 })));
   const logSink = await prepareLogSink(directories.data);
@@ -228,12 +228,12 @@ async function environment(root: string, input: OpenCodeStartInput, password: st
   return { logSink, env: {
     // Deliberately do not copy process.env: no proxy, token, NODE_OPTIONS,
     // BUN_OPTIONS, user HOME, OTEL, npm config, or credential discovery.
-    PATH: '/usr/bin:/bin:/usr/sbin:/sbin', LANG: 'C.UTF-8',
+    PATH: nativeTools ? process.env.PATH ?? '/usr/bin:/bin:/usr/sbin:/sbin' : '/usr/bin:/bin:/usr/sbin:/sbin', LANG: 'C.UTF-8',
     HOME: directories.home, OPENCODE_TEST_HOME: directories.home,
     XDG_DATA_HOME: directories.data, XDG_CACHE_HOME: directories.cache, XDG_CONFIG_HOME: directories.config, XDG_STATE_HOME: directories.state,
     TMPDIR: directories.tmp, TMP: directories.tmp, TEMP: directories.tmp,
     OPENCODE_CONFIG_DIR: configDirectory, OPENCODE_TEST_MANAGED_CONFIG_DIR: directories.managed,
-    OPENCODE_CONFIG_CONTENT: JSON.stringify(controlledConfig(input, disableTitle)),
+    OPENCODE_CONFIG_CONTENT: JSON.stringify(controlledConfig(input, disableTitle, nativeTools)),
     SCREENDECK_LLM_API_KEY: JSON.stringify(input.provider.credential).slice(1, -1),
     OPENCODE_SERVER_USERNAME: 'screendeck', OPENCODE_SERVER_PASSWORD: password,
     OPENCODE_MODELS_PATH: models, OPENCODE_DISABLE_MODELS_FETCH: 'true', OPENCODE_DISABLE_AUTOUPDATE: 'true',
@@ -341,14 +341,14 @@ export class OpenCodeRuntime {
       const abort = new AbortController(); this.startupAbort = abort;
       const timer = setTimeout(() => abort.abort(), this.startTimeout);
       try {
-        const { env, logSink } = await environment(root, input, randomBytes(32).toString('base64url'), true);
+        const { env, logSink } = await environment(root, input, randomBytes(32).toString('base64url'), true, this.options.nativeTools);
         if (abort.signal.aborted || this.stopping) return fail('runtime-cancelled', '执行器连接准备已取消。');
         await this.verifyVersion(binary, env, root, input, logSink, abort);
         if (abort.signal.aborted || this.stopping) return fail('runtime-cancelled', '执行器连接准备已取消。');
         const configText = await this.probe(binary, ['debug', 'config'], env, root, input, logSink, abort, MAX_RESPONSE, 'config');
         let config: unknown;
         try { config = JSON.parse(configText); } catch { return fail('runtime-config', '执行器有效配置预检未返回受控记录。'); }
-        inspectConfig(config, input, true);
+        inspectConfig(config, input, true, this.options.nativeTools);
         await verifyLogSink(logSink);
         await rejectManagedConfiguration();
         if (abort.signal.aborted || this.stopping) return fail('runtime-cancelled', '执行器连接准备已取消。');
@@ -369,12 +369,17 @@ export class OpenCodeRuntime {
           eventQueue = next.catch(() => {});
           return next;
         };
+        const permissions = new Set<(request: RequestPermissionRequest) => Promise<RequestPermissionResponse> | undefined>();
         const app = client({ name: 'ScreenDeck' })
           .onNotification('session/update', notification, async ({ params }) => {
             try { await publish({ type: 'session-update', notification: params }); }
             catch { this.invalidate(owned); }
           })
           .onRequest('session/request_permission', permission, async ({ params }) => {
+            if (this.options.nativeTools) {
+              for (const handler of permissions) { const answer = handler(params); if (answer) return answer; }
+              return { outcome: { outcome: 'cancelled' as const } };
+            }
             const rejected = params.options.find(option => option.kind === 'reject_once');
             try { await publish({ type: 'forbidden-permission', request: params }); }
             catch { this.invalidate(owned); }
@@ -400,6 +405,8 @@ export class OpenCodeRuntime {
         if (owned.failed || rpc.signal.aborted || abort.signal.aborted || this.stopping) throw acpFailure();
         const runtimeID = randomUUID(), connectionGeneration = randomUUID();
         const connection: OpenCodeAcpConnection = Object.freeze({
+          nativeTools: this.options.nativeTools === true,
+          onPermission: (handler: (request: RequestPermissionRequest) => Promise<RequestPermissionResponse> | undefined) => { permissions.add(handler); return () => { permissions.delete(handler); }; },
           runtimeID, connectionGeneration, directory, version: OPENCODE_VERSION,
           configDigest: createHash('sha256').update(JSON.stringify({ transport: 'acp', version: OPENCODE_VERSION, baseURL: input.provider.baseURL, modelID: input.provider.modelID, runtimeID, connectionGeneration })).digest('hex'),
           model: Object.freeze({ provider_id: PROVIDER_ID, model_id: input.provider.modelID }), rpc,

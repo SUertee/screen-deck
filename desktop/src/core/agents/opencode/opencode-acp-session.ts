@@ -154,7 +154,12 @@ export class OpenCodeAcpSessionClient {
       if (attempt.messageID) native.messageIDs.add(attempt.messageID);
       if (!this.blocked(native)) native.phase = attempt.proof.outcome === 'finished' || attempt.proof.outcome === 'cancelled' ? 'ready' : 'blocked';
     } catch (error) {
+      attempt.localStopped = true;
       if (native) native.phase = 'blocked';
+      // A connection can close while a delivered chunk is still being saved.
+      // Drain it before the caller writes terminal facts, or the older save
+      // can replace unknown with streaming and erase the failure observation.
+      await attempt.queue;
       if (error instanceof ExecutionError) throw error;
       throw this.error(attempt, 'network', 'ACP 尝试未能确认完成，不会重新创建或提交。');
     } finally {

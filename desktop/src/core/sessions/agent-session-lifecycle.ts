@@ -1,8 +1,9 @@
+import { supportsAgentChat } from '../../shared/agent-capabilities.js';
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import type { AgentChatReadySource, AgentSendResult, AgentSessionEvent, AgentSessionListing, AgentSessionRecord } from '../../shared/agent-chat.js';
 import type { SessionScope, TurnRecord } from '../../shared/types.js';
-import type { AgentChatDriver, AgentChatExecutionEvent } from './agent-chat-driver.js';
+import type { AgentChatDriverResolver, AgentChatExecutionEvent } from './agent-chat-driver.js';
 import type { AgentSessionHistoryStoring } from './agent-session-history-store.js';
 import { AGENT_CHAT_INPUT_BYTES, validateAgentBinding, validateAgentSession, validateAgentSource } from './agent-session-schema.js';
 import { ExecutionError } from './execution-driver.js';
@@ -37,14 +38,14 @@ export class AgentSessionLifecycle {
 
   constructor(
     private readonly store: AgentSessionHistoryStoring,
-    private readonly driver: AgentChatDriver,
+    private readonly drivers: AgentChatDriverResolver,
     private readonly clock?: () => Date,
     private readonly persistIntervalMs = 250,
   ) {}
 
   async create(input: { title: string; agentID: string; scope?: SessionScope }): Promise<AgentSessionRecord> {
     this.ensureOpen();
-    const source = this.ready();
+    const source = this.ready(input.agentID);
     if (input.agentID !== source.agentID) throw new StorageError('unsupported-agent', '此 Agent 来源尚不可用。');
     const id = randomUUID();
     const now = this.now();
@@ -187,7 +188,9 @@ export class AgentSessionLifecycle {
       const currentSource = this.assertSource(current);
       if (!isDeepStrictEqual(currentSource.model, turn.requested_model)) throw new StorageError('source-changed', 'Agent 模型已变化，请新建聊天。');
       active.driverStarted = true;
-      await this.driver.sendTurn({
+      const driver = this.drivers.resolve(current.source.agentID);
+      if (!driver) throw new ExecutionError('configuration', '原 Agent 适配器未注册，未提交本轮。', false);
+      await driver.sendTurn({
         sessionID: id,
         turnID: turn.turn_id,
         clientRequestID: turn.client_request_id,
@@ -232,7 +235,9 @@ export class AgentSessionLifecycle {
         const record = this.record(id);
         const turn = this.turn(id, active);
         try {
-          active.cancellation = this.driver.cancelTurn({ clientRequestID: turn.client_request_id, source: structuredClone(record.source), ...(record.binding ? { binding: structuredClone(record.binding) } : {}) }).then(result => {
+          const driver = this.drivers.resolve(record.source.agentID);
+          if (!driver || !driver.descriptor.capabilities.interrupt) throw new StorageError('unsupported', '原 Agent 未提供确认停止能力。');
+          active.cancellation = driver.cancelTurn({ clientRequestID: turn.client_request_id, source: structuredClone(record.source), ...(record.binding ? { binding: structuredClone(record.binding) } : {}) }).then(result => {
             active.cancelConfirmed = result.status === 'confirmed';
           }, () => { active.cancelConfirmed = false; });
         } catch { active.cancelConfirmed = false; }
@@ -319,6 +324,7 @@ export class AgentSessionLifecycle {
       catch { throw new ExecutionError('configuration', 'Agent 来源已失效，尚未提交。', false); }
       return;
     }
+    if (event.type === 'tool' || event.type === 'permission') throw new ExecutionError('tools-forbidden', '原生工具事件缺少管控组件。', active.attempted);
     if (event.type === 'submitted') {
       active.attempted = true;
       if (!this.record(id).binding) throw new ExecutionError('protocol', 'Agent 提交前没有已保存的原生绑定。', true);
@@ -355,9 +361,9 @@ export class AgentSessionLifecycle {
     }
   }
 
-  private ready(): AgentChatReadySource {
-    const source = this.driver.getSource();
-    if (!source || source.state !== 'ready') throw new StorageError('agent-unavailable', 'Agent 尚未就绪，请在编码工具设置中明确启动。');
+  private ready(agentID: string): AgentChatReadySource {
+    const source = this.drivers.getSource(agentID);
+    if (!source || source.state !== 'ready' || !supportsAgentChat(source.capabilities)) throw new StorageError('agent-unavailable', 'Agent 尚未就绪，请在编码工具设置中明确启动。');
     validateAgentSource({ agentID: source.agentID, configDigest: source.configDigest });
     validateModel(source.model);
     validateAgentBinding({ runtimeID: source.runtimeID, connectionGeneration: source.connectionGeneration, externalSessionID: 'ready' });
@@ -365,7 +371,7 @@ export class AgentSessionLifecycle {
   }
 
   private assertSource(record: AgentSessionRecord): AgentChatReadySource {
-    const source = this.ready();
+    const source = this.ready(record.source.agentID);
     if (record.source.agentID !== source.agentID || record.source.configDigest !== source.configDigest) throw new StorageError('source-changed', '原 Agent 配置已失效，请新建聊天。');
     if (record.binding && (record.binding.runtimeID !== source.runtimeID || record.binding.connectionGeneration !== source.connectionGeneration)) throw new StorageError('binding-unavailable', '原 Agent 实例已不可确认，请新建聊天；不会重新绑定。');
     return source;

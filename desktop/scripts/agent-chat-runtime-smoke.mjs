@@ -8,6 +8,10 @@ import { join, isAbsolute } from 'node:path';
 import { tmpdir } from 'node:os';
 import { OpenCodeRuntime } from '../src/main/opencode-runtime.js';
 import { OpenCodeAgentChatAdapter } from '../src/core/agents/opencode/opencode-agent-chat-adapter.js';
+import { AgentChatRegistry } from '../src/core/agents/agent-chat-registry.js';
+import { AgentChatModeRouter } from '../src/core/agents/agent-chat-mode-router.js';
+import { AgentExecutionController } from '../src/core/agents/agent-execution-controller.js';
+import { NATIVE_AGENT_CAPABILITIES } from '../src/shared/agent-capabilities.js';
 import { SessionManager } from '../src/core/sessions/session-manager.js';
 import { SessionHistoryStore } from '../src/core/sessions/session-history-store.js';
 import { AgentSessionHistoryStore } from '../src/core/sessions/agent-session-history-store.js';
@@ -33,7 +37,9 @@ const address = provider.address(); if (!address || typeof address === 'string')
 const runtime = new OpenCodeRuntime({ root, startTimeoutMs: 30000 });
 const driver = new OpenCodeAgentChatAdapter({ getConnection: () => runtime.getACPConnection(), executionTimeoutMs: 30000, cancelTimeoutMs: 5000 });
 const ordinary = { capabilities: { chat: true, tools: false, remoteSessions: false, remoteAbort: false }, execute: async () => { throw new Error('Ordinary chat is forbidden in this probe.'); } };
-const makeManager = () => new SessionManager({ store: new SessionHistoryStore(join(root, 'sessions')), driver: ordinary, agent: { store: new AgentSessionHistoryStore(root), driver } });
+const native = { descriptor: { ...driver.descriptor, capabilities: NATIVE_AGENT_CAPABILITIES }, getSource: () => { const source = driver.getSource(); return source ? { ...source, capabilities: NATIVE_AGENT_CAPABILITIES } : undefined; }, sendTurn: async () => { throw new Error('Native tools forbidden in plain-chat smoke'); }, cancelTurn: lookup => driver.cancelTurn(lookup) };
+const routed = new AgentExecutionController(root, () => {}).wrap(new AgentChatModeRouter(native, driver));
+const makeManager = () => new SessionManager({ store: new SessionHistoryStore(join(root, 'sessions')), driver: ordinary, agent: { store: new AgentSessionHistoryStore(root), drivers: new AgentChatRegistry([{ driver: routed }]) } });
 let manager = makeManager();
 try {
   await runtime.startACP({ binaryPath, provider: { baseURL: 'http://127.0.0.1:' + address.port + '/v1', modelID: 'fixture-model', credential }, allowLocalProvider: true });

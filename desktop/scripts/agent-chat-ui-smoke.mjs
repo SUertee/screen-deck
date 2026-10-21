@@ -68,7 +68,8 @@ const start = async (manualChoose = false) => {
     assert.deepEqual(await page.evaluate(() => window.screendeck.getOpenCodeStatus()), { state: 'stopped' });
   }
   await modal.getByTestId('opencode-runtime-start').click();
-  await expect(modal.getByTestId('opencode-runtime-status')).toContainText('已连接 1.19.0', { timeout: 30_000 });
+  await expect(modal.getByTestId('opencode-runtime-status')).toHaveText('已连接', { timeout: 30_000 });
+  assert.equal((await page.evaluate(() => window.screendeck.getOpenCodeStatus())).version, '1.19.0');
   assert.equal((await application.evaluate(() => globalThis.__agentChatUICounts)).chooserCalls, chooserBefore + (manualChoose ? 1 : 0));
   await modal.getByRole('button', { name: '完成', exact: true }).click();
 };
@@ -101,7 +102,7 @@ const launch = async () => {
   page.setDefaultTimeout(15_000);
 };
 const sendText = async text => { await composer().fill(text); await page.getByRole('button', { name: '发送消息', exact: true }).click(); };
-const openAgent = async () => { await page.locator('.session-button[data-chat-source="agent"]').first().click(); await expect(picker()).toHaveValue('agent'); };
+const openAgent = async () => { await page.locator('.session-button[data-chat-source="agent"]').first().click(); await expect(picker()).toHaveValue('agent:opencode'); };
 const assertFit = async () => {
   const metrics = await page.evaluate(() => {
     const selectors = ['.composer', '.chat-source-select', '.model-select', '.send-button'];
@@ -119,7 +120,7 @@ try {
     assert.equal((await application.evaluate(() => globalThis.__agentChatUICounts)).chooserCalls, 0); await noPrompt();
   });
   await check('new-agent-draft-keeps-idle-connection-in-settings-button-without-starting', async () => {
-    await composer().fill('模型新聊天草稿'); await picker().selectOption('agent');
+    await composer().fill('模型新聊天草稿'); await picker().selectOption('agent:opencode');
     await expect(composer()).toHaveValue(''); await expect(page.getByText('OpenCode 尚未连接。', { exact: true })).toHaveCount(0);
     await expect(page.locator('.composer-source-feedback')).toHaveCount(0);
     await expect(page.getByRole('button', { name: '打开 Agent 设置', exact: true })).toHaveCount(0);
@@ -135,7 +136,7 @@ try {
   });
   await check('new-drafts-are-separated-by-source-without-creating-session', async () => {
     await composer().fill('Agent 新聊天草稿'); await picker().selectOption('model'); await expect(composer()).toHaveValue('模型新聊天草稿');
-    await picker().selectOption('agent'); await expect(composer()).toHaveValue('Agent 新聊天草稿');
+    await picker().selectOption('agent:opencode'); await expect(composer()).toHaveValue('Agent 新聊天草稿');
     assert.equal((await page.evaluate(() => window.screendeck.bootstrap())).agentSessions.length, 0); await noPrompt();
   });
   await check('model-button-opens-model-settings-and-saving-does-not-start', async () => {
@@ -149,10 +150,10 @@ try {
     assert.deepEqual(await page.evaluate(() => window.screendeck.getOpenCodeStatus()), { state: 'stopped' }); await noPrompt();
   });
   await check('explicit-start-verifies-connection-but-creates-no-native-chat', async () => {
-    await start(true); await picker().selectOption('agent');
+    await start(true); await picker().selectOption('agent:opencode');
     await expect(page.getByRole('button', { name: 'Agent 设置', exact: true })).toHaveAttribute('title', new RegExp(modelID));
     await expect(page.locator('.model-select')).toHaveCount(1); await expect(page.locator('.agent-model-label')).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'OpenCode 聊天暂不支持 Deck', exact: true })).toBeDisabled();
+    await expect(page.getByRole('button', { name: '打开 Deck', exact: true })).toBeEnabled();
     const value = await counts(); assert.equal(value.controls.titleDisabled, true); assert.equal(value.controls.toolPolicyDenied, true); await noPrompt();
   });
   const firstText = '第一轮：只讨论合成目标。', secondText = '第二轮：继续上一轮的合成上下文。';

@@ -16,8 +16,6 @@ ScreenDeck 围绕“下一步要推进什么”组织工作：从聊天或屏幕
 
 https://github.com/user-attachments/assets/de9cfc05-ee79-4eb0-96a7-85c1163280b2
 
-约 1 分 20 秒 · 720p 在线播放 · 含音乐 · [下载 1080p 原版](assets/demo/screendeck-demo.mp4?raw=true)
-
 视频展示产品理念与任务协作流程；当前已实现能力和后续范围见下文。
 
 ## 可以做什么

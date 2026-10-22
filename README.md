@@ -14,9 +14,9 @@ ScreenDeck 围绕“下一步要推进什么”组织工作：从聊天或屏幕
 
 ## 演示视频
 
-[![ScreenDeck 演示视频封面：将分散的屏幕、应用与对话线索汇聚为任务](assets/demo/cover.jpg)](assets/demo/screendeck-demo.mp4?raw=true)
+https://github.com/user-attachments/assets/de9cfc05-ee79-4eb0-96a7-85c1163280b2
 
-**[▶ 观看／下载 ScreenDeck 宣传片](assets/demo/screendeck-demo.mp4?raw=true)** · 约 1 分 20 秒 · 含音乐
+约 1 分 20 秒 · 720p 在线播放 · 含音乐 · [下载 1080p 原版](assets/demo/screendeck-demo.mp4?raw=true)
 
 视频展示产品理念与任务协作流程；当前已实现能力和后续范围见下文。
 
